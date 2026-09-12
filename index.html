@@ -41,6 +41,30 @@ const CFG = {
 };
 
 // =====================================================================
+//  AUTO-UPDATE (website only). When you quit to the menu or restart, the
+//  game quietly asks the website "is there a newer version?" by reading a
+//  tiny file, version.json. If its number is different from BUILD_ID, it
+//  reloads into the new version. build-site.js stamps a real number in here
+//  for the website; 'dev' (your own copy) never checks.
+// =====================================================================
+const BUILD_ID = '20260912200231';
+function checkForUpdate(then = null, resume = null) {
+  if (BUILD_ID === 'dev' || location.protocol === 'file:') { if (then) then(); return; }
+  if (S.checking) return;
+  S.checking = true;
+  fetch('version.json?t=' + Date.now(), { cache: 'no-store' })   // ?t= = never use an old saved copy
+    .then(r => r.ok ? r.json() : null)
+    .then(v => {
+      S.checking = false;
+      if (v && v.build && v.build !== BUILD_ID) {
+        try { sessionStorage.setItem('v0id3d_updated', JSON.stringify({ resume })); } catch (e) {}
+        location.replace(location.pathname + '?v=' + v.build);   // a new address = the browser can't reuse the old page
+      } else if (then) then();
+    })
+    .catch(() => { S.checking = false; if (then) then(); });   // offline? just keep playing
+}
+
+// =====================================================================
 //  CANVAS — we draw at a LOW resolution and let CSS blow it up.
 //  Every game pixel becomes a PX x PX square on screen.
 // =====================================================================
@@ -1097,6 +1121,16 @@ const S = {
   beatPh: 0,              // The Anchor's heartbeat (0 -> 1 each beat)
 };
 try { S.best = +localStorage.getItem('v0id3d_best') || 0; } catch (e) {}
+// did we just reload into a NEW VERSION? (and should we continue an area?)
+try {
+  const up = sessionStorage.getItem('v0id3d_updated');
+  if (up) { S.updated = true; S.resume = JSON.parse(up).resume; sessionStorage.removeItem('v0id3d_updated'); }
+} catch (e) {}
+// start from the title: continue the area you restarted (after an update), or a new run
+function startFromTitle() {
+  if (S.resume) { const r = S.resume; S.resume = null; S.updated = false; startArea(r.area, r.n); }
+  else { S.updated = false; newRun(); }
+}
 function saveBest() { try { localStorage.setItem('v0id3d_best', S.best); } catch (e) {} }
 
 let world = null, player = null, particles = [], flyers = [], pops = [];
@@ -1369,10 +1403,11 @@ function startArea(area, n) {
 }
 function newRun() { startArea(1, CFG.firstShards); }
 function nextArea() { startArea(S.area + 1, S.shardCount + ri(CFG.moreShardsMin, CFG.moreShardsMax)); }
-function toTitle() {
+function toTitle(quit = false) {
   S.mode = 'title';
   world = genWorld(11, 777); player = null; flyers = []; particles = []; pops = [];
   cam.x = 0; cam.y = -30;
+  if (quit) checkForUpdate();                     // quit to the menu = a good moment to grab a new version
 }
 function areaClear() {
   S.mode = 'clear'; S.clearT = 0; S.boost = 0.5; S.shake = 3;
@@ -1516,6 +1551,16 @@ function update(dt) {
   }
   else if (S.mode === 'grabbed') {
     S.grabT += dt;
+    // bits of you stream off your pieces, flowing out along the bolts
+    const pull = grabPull();
+    if (S.grabT > GRAB.snap) grabPieces(player.x, player.y).forEach(([x, y], k) => {
+      const [dx, dy] = GRAB_DIRS[k];
+      for (let i = 0, n = S.grabT < GRAB.tear ? (rnd() < 0.3 + pull * 0.07 ? 1 : 0) : 3; i < n; i++) {
+        const v = rr(25, 70) * (S.grabT < GRAB.tear ? 1 : 2.5);
+        particles.push({ x: x + rr(-2, 2), y: y + rr(-2, 2), vx: dx * v + rr(-12, 12), vy: dy * v + rr(-12, 12),
+                         life: rr(0.2, 0.55), max: 0.55, col: rnd() < 0.5 ? '#fff' : '#ff0000', s: 1, streak: rnd() < 0.6 });
+      }
+    });
     if (!S.torn && S.grabT >= GRAB.tear) {           // RIP
       S.torn = true; S.shake = 9; SFX.tear();
       burstParticles(player.x, player.y, 40, 2.2, ['#fff', '#fff', '#ff0000', '#ff0000', '#000']);
@@ -2739,37 +2784,83 @@ const GRAB = { snap: 0.25, tear: 1.0, end: 1.25 };
 // your diamond split into 4 triangles (cut along both of its diagonals)
 const GRAB_PIECES = [[[0, 0], [0, -5], [5, 0]], [[0, 0], [5, 0], [0, 5]], [[0, 0], [0, 5], [-5, 0]], [[0, 0], [-5, 0], [0, -5]]];
 const GRAB_DIRS = [[0.707, -0.707], [0.707, 0.707], [-0.707, 0.707], [-0.707, -0.707]];
-const GS = 2.2;                                             // you're drawn this much BIGGER during the grab (a zoom-in)
+const GS = 1.3;                                             // pieces are a bit bigger; the real drama comes from the ZOOM
 function grabPull() {                                       // how far apart the pieces are
   const u = S.grabT;
   if (u < GRAB.snap) return 0;
   if (u < GRAB.tear) { const v = (u - GRAB.snap) / (GRAB.tear - GRAB.snap); return v * v * 9; }
-  const v = (u - GRAB.tear) / (GRAB.end - GRAB.tear); return 9 + v * v * 230;
+  const v = (u - GRAB.tear) / (GRAB.end - GRAB.tear); return 9 + v * v * 120;
 }
-function grabPieces(px, py) {                               // where each piece is on screen
+function grabPieces(px, py) {                               // where each piece is (works for screen OR world coords)
   const pull = grabPull(), tr = S.grabT > GRAB.snap && S.grabT < GRAB.tear ? 1.2 : 0.4;
   return GRAB_DIRS.map(([dx, dy], k) => [px + dx * (pull + 2) * GS + (hash2(k, Math.floor(S.t * 30), 63) * 2 - 1) * tr * GS,
                                          py + dy * (pull + 2) * GS + (hash2(k, Math.floor(S.t * 30), 64) * 2 - 1) * tr * GS]);
 }
-function drawGrabbedPlayer(px, py) {
-  const pull = grabPull(), pieces = grabPieces(px, py);
-  if (S.grabT < GRAB.tear) {                                // strands stretching between you and your pieces
-    g.strokeStyle = '#fff'; g.lineWidth = 1; g.globalAlpha = 0.8;
-    for (const [x, y] of pieces) { g.beginPath(); g.moveTo(px, py); g.lineTo(x, y); g.stroke(); }
+// YOU, being torn apart — in two layers:
+//   'under' = your glow + the stretching strands, drawn INSIDE the world
+//             (so the bloom lights them like everything else)
+//   'over'  = your core + the 4 pieces, drawn after the bolts so the bolts
+//             don't hide you — but still BEFORE the zoom, so it all zooms together
+function drawGrabbedPlayer(px, py, layer) {
+  const u = S.grabT, pull = grabPull(), pieces = grabPieces(px, py), torn = u >= GRAB.tear;
+  const tv = torn ? Math.min(1, (u - GRAB.tear) / (GRAB.end - GRAB.tear)) : 0;   // 0..1 after the rip
+  const fq = Math.floor(S.t * 20);
+  if (layer === 'under') glowAt(px, py, 16 + pull, 16 + pull, 0.3 + Math.min(pull, 9) * 0.02);
+  if (layer === 'under' && !torn) {
+    // strands of you stretching like taffy between your core and each piece:
+    // wobbly, thinning out as they stretch (a red one and a white one each)
+    g.globalAlpha = Math.max(0.25, 1 - pull / 11); g.lineWidth = 1;
+    pieces.forEach(([x, y], k) => {
+      for (const col of ['#ff0000', '#fff']) {
+        g.strokeStyle = col; g.beginPath(); g.moveTo(px, py);
+        for (let s = 1; s <= 4; s++) {
+          const f = s / 4, wob = Math.sin(f * Math.PI) * 2.5;
+          g.lineTo(lerp(px, x, f) + (hash2(k * 9 + s, fq, col === '#fff' ? 65 : 66) - 0.5) * wob,
+                   lerp(py, y, f) + (hash2(k * 9 + s, fq, col === '#fff' ? 67 : 68) - 0.5) * wob);
+        }
+        g.stroke();
+      }
+    });
     g.globalAlpha = 1;
-    diamond(px, py, (1.5 + Math.sin(S.t * 30) * 0.5) * GS, '#ff0000');   // your red core, still there... for now
   }
+  if (layer !== 'over') return;
+  // your red core: unstable, flickering, swelling as you're pulled
+  if (!torn && hash2(1, Math.floor(S.t * 25), 69) > 0.15) diamond(px, py, (1.3 + Math.sin(S.t * 40) * 0.4 + Math.min(pull, 9) * 0.1) * GS, '#ff0000');
   GRAB_PIECES.forEach((tri, k) => {
-    const [x, y] = pieces[k], [dx, dy] = GRAB_DIRS[k];
-    const ox = x - dx * 2 * GS - px, oy = y - dy * 2 * GS - py;   // how far this piece has moved
-    g.fillStyle = '#fff'; g.beginPath();
-    tri.forEach(([tx, ty], i) => i ? g.lineTo(px + ox + tx * GS, py + oy + ty * GS) : g.moveTo(px + ox + tx * GS, py + oy + ty * GS));
-    g.closePath(); g.fill();
-    g.fillStyle = '#000'; g.beginPath();                    // its bit of your black middle
-    tri.forEach(([tx, ty], i) => i ? g.lineTo(px + ox + tx * 0.4 * GS, py + oy + ty * 0.4 * GS) : g.moveTo(px + ox + tx * 0.4 * GS, py + oy + ty * 0.4 * GS));
-    g.closePath(); g.fill();
+    const [x, y] = pieces[k], [dx, dy] = GRAB_DIRS[k], dir = Math.atan2(dy, dx);
+    const ox = x - dx * 2 * GS, oy = y - dy * 2 * GS;        // where this piece's corner of "you" is now
+    const stretch = 1 + Math.min(pull, 9) * 0.06;            // pulled long toward its bolt...
+    const shrink = torn ? 1 - tv * 0.85 : 1;                 // ...and after the rip, falling apart
+    const spin = torn ? tv * tv * 7 * (k % 2 ? 1 : -1) : (hash2(k, Math.floor(S.t * 30), 70) - 0.5) * 0.15;
+    const tri2 = f => { g.beginPath(); tri.forEach(([tx, ty], i) => i ? g.lineTo(tx * f, ty * f) : g.moveTo(tx * f, ty * f)); g.closePath(); };
+    g.save();
+    g.translate(ox, oy);
+    g.rotate(dir); g.scale(stretch * shrink, (2 - stretch) * shrink); g.rotate(-dir + spin);   // stretch along the pull
+    g.scale(GS, GS);
+    // the colours split apart as it breaks: a red copy sliding out from behind
+    g.save(); g.translate(Math.cos(dir) * (0.6 + pull * 0.08), Math.sin(dir) * (0.6 + pull * 0.08));
+    g.fillStyle = '#ff0000'; g.globalAlpha = 0.75; tri2(1); g.fill(); g.restore();
+    g.fillStyle = '#fff'; tri2(1); g.fill();
+    g.fillStyle = '#000'; tri2(0.4); g.fill();
+    // corruption eating into the piece: red and black pixels, more and more
+    g.save(); tri2(1); g.clip();
+    for (let i = 0, n = Math.round(Math.min(pull, 9) * 1.2 + (torn ? 14 : 0)); i < n; i++) {
+      g.fillStyle = hash2(k * 50 + i, fq, 71) < 0.6 ? '#ff0000' : '#000';
+      g.fillRect(hash2(k * 50 + i, fq, 72) * 10 - 5, hash2(k * 50 + i, fq, 73) * 10 - 5, 1 / GS + 0.4, 1 / GS);
+    }
+    g.restore();
+    g.restore();
   });
-  glowAt(px, py, 30, 30, 0.6);
+}
+
+// the ZOOM: the whole picture pushes in on you as you're grabbed, and a bit
+// more when you rip — everything zooms together, so nothing looks stuck on
+function grabZoom(px, py) {
+  const u = S.mode === 'grabbed' ? S.grabT : GRAB.end;
+  const z = 1 + 0.75 * (1 - Math.pow(1 - Math.min(1, u / 0.3), 3)) + Math.max(0, u - GRAB.tear) * 1.2;
+  const vw = W / z, vh = H / z, vx = clamp(px - vw / 2, 0, W - vw), vy = clamp(py - vh / 2, 0, H - vh);
+  sg.globalCompositeOperation = 'source-over'; sg.drawImage(cv, 0, 0);
+  g.drawImage(scratch, vx, vy, vw, vh, 0, 0, W, H);
 }
 
 // px, py = where YOU are on screen — the lightning reaches for you
@@ -2799,8 +2890,12 @@ function edgeCorruption(L, px = W / 2, py = H / 2) {
     const bolts = [], slow = Math.floor(S.t * 2);
     TUNNEL.cracks.forEach((c, id) => {
       const m = tunnelM(c.a), x0 = cx + Math.cos(c.a) * ax * m, y0 = cy + Math.sin(c.a) * by * m;
-      const [tx, ty] = grabbing ? pieces[id % pieces.length] : [px, py];
-      const f = grabbing ? Math.min(1, S.grabT / GRAB.snap) : rf * (0.62 + 0.3 * hash2(id, 1, 61));   // how far it gets
+      // while grabbing: 4 bolts HOLD ON (one per piece of you); the rest let go and pull back
+      const holds = grabbing && id < pieces.length;
+      const [tx, ty] = holds ? pieces[id] : [px, py];
+      const reach = rf * (0.62 + 0.3 * hash2(id, 1, 61));
+      let f = holds ? Math.min(1, S.grabT / GRAB.snap) : grabbing ? reach * Math.max(0.35, 1 - S.grabT * 1.5) : reach;
+      if (holds) f *= 1 - 3 / Math.max(3.5, Math.hypot(tx - x0, ty - y0));   // stop just short, so you can see the piece
       const ex = lerp(x0, tx, f), ey = lerp(y0, ty, f), len = Math.hypot(ex - x0, ey - y0);
       const nx = -(ey - y0) / (len || 1), ny = (ex - x0) / (len || 1);       // sideways, for the zig-zag
       const ln = [];
@@ -2808,7 +2903,7 @@ function edgeCorruption(L, px = W / 2, py = H / 2) {
         const u = s / n, wig = (hash2(id * 17 + s, slow, 62) - 0.5) * Math.min(22, len * 0.18) * Math.sin(u * Math.PI);
         ln.push([lerp(x0, ex, u) + nx * wig, lerp(y0, ey, u) + ny * wig]);
       }
-      bolts.push([ln, 100 + id, grabbing]);
+      bolts.push([ln, 100 + id, holds]);
     });
     drawBolts(bolts, 0, 0);
   }
@@ -3146,7 +3241,8 @@ function drawTitle() {
   // browsers block sound until you click or press something, so the
   // first press just "wakes up" the audio and starts the menu music
   if (Math.floor(S.t * 2) % 2)
-    text(AU.ctx ? 'PRESS ENTER TO START' : 'CLICK TO ENTER THE VOID', W / 2, H - 70, 2, '#fff', 0.2, 'center');
+    text(!AU.ctx ? 'CLICK TO ENTER THE VOID' : S.resume ? 'PRESS ENTER TO CONTINUE AREA ' + S.resume.area : 'PRESS ENTER TO START', W / 2, H - 70, 2, '#fff', 0.2, 'center');
+  if (S.updated) text('NEW VERSION LOADED', W / 2, H - 88, 1, '#ff0000', 0.1, 'center');
   text('WASD / ARROWS  MOVE    E  DELIVER    M  MUTE    F  FULLSCREEN    ESC  PAUSE', W / 2, H - 36, 1, '#8c8c96', 0.03, 'center');
   if (S.best) text('BEST: AREA ' + S.best + ' CLEARED', W / 2, H - 22, 1, '#8c8c96', 0.03, 'center');
   // credit where it's due: the kill sound + scream come from DOORS
@@ -3207,6 +3303,7 @@ function render() {
   if (player && S.mode !== 'dead') {
     for (const s of player.carried) drawShard(s, s.cx - camX, s.cy - camY, ART, k, 0.6);
     if (S.mode === 'play' || S.mode === 'paused' || S.mode === 'clear') drawPlayer(camX, camY, k);
+    else if (S.mode === 'grabbed') drawGrabbedPlayer(Math.round(player.x - camX), Math.round(player.y - camY), 'under');
   }
   for (const p of particles) {
     g.globalAlpha = clamp(p.life / p.max * 1.5, 0, 1); g.fillStyle = p.col;
@@ -3232,7 +3329,10 @@ function render() {
   riftFX(S.rift * (1 - S.pure), S.riftX - camX, S.riftY - camY);
   edgeCorruption(S.mode === 'dying' ? 0.6 + S.dieT * 0.3 : S.mode === 'grabbed' ? 1 : late,
                  player ? player.x - camX : W / 2, player ? player.y - camY : H / 2);
-  if (S.mode === 'grabbed') drawGrabbedPlayer(Math.round(player.x - camX), Math.round(player.y - camY));
+  // zoom in on you while you're grabbed (and on the jumpscare's first frame,
+  // so the frozen "glass" it cracks is the zoomed view — no jump)
+  if (S.mode === 'grabbed') drawGrabbedPlayer(Math.round(player.x - camX), Math.round(player.y - camY), 'over');
+  if (player && (S.mode === 'grabbed' || (S.mode === 'dying' && !S.shatter))) grabZoom(player.x - camX, player.y - camY);
   if (S.mode === 'dying') drawJumpscare(S.dieT);
 
   if (S.mode === 'play' || S.mode === 'paused' || S.mode === 'grabbed') drawHUD(k, late);
@@ -3258,19 +3358,19 @@ addEventListener('keydown', e => {
   audioInit();                                 // browsers only allow sound after you press something
   if (key === 'm') setMute(!AU.muted);
   if (key === 'f') toggleFullscreen();
-  if (S.mode === 'title') { if (!firstPress && (key === 'enter' || key === ' ')) newRun(); }
+  if (S.mode === 'title') { if (!firstPress && (key === 'enter' || key === ' ')) startFromTitle(); }
   else if (S.mode === 'play') {
     if (key === 'e') tryDeliver();
     if (key === 'escape' || key === 'p') S.mode = 'paused';
   }
   else if (S.mode === 'paused') {
     if (key === 'escape' || key === 'p') S.mode = 'play';
-    if (key === 'q') toTitle();
+    if (key === 'q') toTitle(true);
   }
   else if (S.mode === 'clear') { if (S.clearT > CLEAR.enter && (key === 'enter' || key === ' ')) nextArea(); }
   else if (S.mode === 'dead') {
-    if (key === 'r') startArea(S.area, S.shardCount);
-    if (key === 'enter') toTitle();
+    if (key === 'r') checkForUpdate(() => startArea(S.area, S.shardCount), { area: S.area, n: S.shardCount });
+    if (key === 'enter') toTitle(true);
   }
 });
 addEventListener('keyup', e => { keys[e.key.toLowerCase()] = false; });
@@ -3285,7 +3385,7 @@ function toggleFullscreen() {
 addEventListener('mousedown', () => {
   const firstPress = !AU.ctx;
   audioInit();
-  if (S.mode === 'title' && !firstPress) newRun();
+  if (S.mode === 'title' && !firstPress) startFromTitle();
 });
 addEventListener('blur', () => {
   for (const key in keys) keys[key] = false;
