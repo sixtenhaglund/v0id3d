@@ -56,7 +56,7 @@ const CFG = {
 //  reloads into the new version. build-site.js stamps a real number in here
 //  for the website; 'dev' (your own copy) never checks.
 // =====================================================================
-const BUILD_ID = '20260912205343';
+const BUILD_ID = '20260912205704';
 function checkForUpdate(then = null, resume = null) {
   if (BUILD_ID === 'dev' || location.protocol === 'file:') { if (then) then(); return; }
   if (S.checking) return;
@@ -1184,11 +1184,12 @@ const S = {
   beatPh: 0,              // The Anchor's heartbeat (0 -> 1 each beat)
 };
 try { S.best = +localStorage.getItem('v0id3d_best') || 0; } catch (e) {}
-try { S.devMode = localStorage.getItem('v0id3d_dev') === '1'; } catch (e) {}   // stays unlocked
-// DEV MODE — unlocked by typing dev_mode. It doesn't DO anything yet.
+// (dev mode used to be SAVED, so it looked unlocked from the start — clear that old save)
+try { localStorage.removeItem('v0id3d_dev'); } catch (e) {}
+// DEV MODE — unlocked by typing dev_mode. It lasts until you reload the page.
+// It doesn't DO anything yet.
 function unlockDevMode() {
   S.devMode = true; S.devFlash = 2.5;
-  try { localStorage.setItem('v0id3d_dev', '1'); } catch (e) {}
   blip([523, 659, 784, 1047], 0.07, 0.06, 'square');       // a little "unlocked!" jingle
 }
 // did we just reload into a NEW VERSION? (and should we continue an area?)
