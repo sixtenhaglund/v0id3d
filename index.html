@@ -36,7 +36,7 @@ const CFG = {
   riftRange: 120,         // how close (pixels) to a rift before your screen starts glitching
   testStartCarried: 0,
   portalChance: 0.2,      // the blue portal shows up in 1 of every 5 areas
-  pureRange: 280,         // how far (pixels) the portal's calm reaches: glitching fades as you get closer
+  pureRange: 190,         // how far (pixels) the portal's reach goes: calm, slowing, pulling
   portalPull: 34,         // how hard The Portal drags you in (a slow drift — you can always walk back out, slowly)
   maxHp: 100,             // your health
   nodeDamage: 8,          // walking into a node connection
@@ -55,7 +55,7 @@ const CFG = {
 //  reloads into the new version. build-site.js stamps a real number in here
 //  for the website; 'dev' (your own copy) never checks.
 // =====================================================================
-const BUILD_ID = '20260912203543';
+const BUILD_ID = '20260912204259';
 function checkForUpdate(then = null, resume = null) {
   if (BUILD_ID === 'dev' || location.protocol === 'file:') { if (then) then(); return; }
   if (S.checking) return;
@@ -777,6 +777,28 @@ const SFX = {
       s.connect(distortion(1.6)).connect(gn).connect(AU.master); s.start(t, 1.29, 1.3);
     }
   },
+  // THE PORTAL TAKES YOU: a shimmering chord that rises as the screen warps,
+  // a deep swell, and when everything has shrunk into the dot: one soft
+  // bright tone that hangs there... forever
+  ascend() {
+    const ctx = AU.ctx; if (!ctx) return;
+    const t = ctx.currentTime;
+    for (const [f, v] of [[164.8, 0.05], [246.9, 0.04], [329.6, 0.035], [493.9, 0.03], [659.3, 0.02], [987.8, 0.012]]) {
+      const o = ctx.createOscillator(), gn = ctx.createGain();
+      o.type = 'sine'; o.frequency.setValueAtTime(f, t); o.frequency.exponentialRampToValueAtTime(f * 2, t + WARP.zoom);
+      gn.gain.setValueAtTime(0, t); gn.gain.linearRampToValueAtTime(v, t + 2); gn.gain.setValueAtTime(v, t + WARP.whole);
+      gn.gain.exponentialRampToValueAtTime(0.0005, t + WARP.zoom);
+      o.connect(gn).connect(AU.master); o.start(t); o.stop(t + WARP.zoom + 0.1);
+    }
+    burst(WARP.whole, 0.12, 200, 1, false, 0, 4000);                       // a rushing swell
+    thump(0.5, 80, 30, 3, WARP.whole);                                     // everything falls away
+    for (const f of [1318.5, 1975.5]) {                                    // the tone that stays
+      const o = ctx.createOscillator(), gn = ctx.createGain();
+      o.type = 'sine'; o.frequency.value = f;
+      gn.gain.setValueAtTime(0, t + WARP.zoom - 0.3); gn.gain.linearRampToValueAtTime(0.012, t + WARP.zoom + 2);
+      o.connect(gn).connect(AU.master); o.start(t + WARP.zoom - 0.3);   // (never stopped)
+    }
+  },
   // RIP: you tear apart
   tear() { burst(0.5, 0.7, 1200, 0.4, true); burst(0.3, 0.5, 6000, 1, false, 0, 300); thump(0.9, 180, 30, 0.5); },
   // the cutscene build-up: a rumble, rising noise and a rising tone that all
@@ -1112,7 +1134,7 @@ function portalStep(step, t, sd) {
 function portalMusicTick() {
   const ctx = AU.ctx; if (!ctx || !AU.pmus) return;
   AU.pmus.gain.setTargetAtTime(S.pure * 0.9, ctx.currentTime, 0.4);                // louder the closer you are
-  const want = S.mode === 'play' && world && world.portal && S.pure > 0.01;
+  const want = (S.mode === 'play' || S.mode === 'warping') && world && world.portal && S.pure > 0.01;
   if (want && !PMUS.on) { PMUS.on = true; PMUS.next = ctx.currentTime + 0.1; }
   if (!want) { PMUS.on = false; return; }
   if (PMUS.next < ctx.currentTime - 0.3) PMUS.next = ctx.currentTime + 0.05;
@@ -1524,6 +1546,17 @@ const DEATH_TEXT = {
   rift:   ['CONSUMED', 'KILLED BY A RIFT'],
 };
 
+// THE PORTAL ENDING (a secret). Stay 4 seconds in The Portal's middle and it
+// takes you: the edges of the screen start to warp, the warp spreads until the
+// whole screen twists, then everything zooms out into a black void with one
+// shining blue/purple dot in the middle... and stays there forever.
+//   (times are seconds since the warp started)
+const WARP = { whole: 6, zoom: 8.2, end: 8.4 };
+function startWarp() {
+  S.mode = 'warping'; S.warpT = 0;
+  SFX.ascend();
+}
+
 // the timer hit zero: the lightning catches you. (After GRAB.end, die()
 // starts the screen-crack jumpscare.)
 function grab() {
@@ -1602,7 +1635,7 @@ function update(dt) {
     const d = Math.hypot(player.x - world.portal.x, player.y - world.portal.y);
     pt = Math.pow(clamp(1 - (d - 40) / (CFG.pureRange - 40), 0, 1), 1.2);
   }
-  S.pure += (pt - S.pure) * (1 - Math.exp(-dt * 2.5));
+  S.pure += (pt - S.pure) * (1 - Math.exp(-dt * 1.6));     // (a soft fade in and out)
   S.shake = Math.max(0, S.shake - dt * 14);
   S.boost = Math.max(0, S.boost - dt * 1.6);
   S.hitFlash = Math.max(0, (S.hitFlash || 0) - dt * 2.5);
@@ -1640,6 +1673,15 @@ function update(dt) {
     if (S.clearT > CLEAR.end) nextArea();
   }
   else if (S.mode === 'cracking') { S.crackT += dt; if (S.crackT > CRACK.end) S.mode = 'dead'; }
+  else if (S.mode === 'warping' || S.mode === 'beyond') {
+    S.warpT += dt;
+    if (S.mode === 'warping') {                        // you're held right in the middle
+      const e = 1 - Math.exp(-dt * 3);
+      player.x += (world.portal.x - player.x) * e; player.y += (world.portal.y - player.y) * e;
+      cam.x += (player.x - cam.x) * e; cam.y += (player.y - cam.y) * e;
+      if (S.warpT >= WARP.end) S.mode = 'beyond';     // ...and it never ends
+    }
+  }
   else if (S.mode === 'grabbed') {
     S.grabT += dt;
     // bits of you stream off your pieces, flowing out along the bolts
@@ -1682,7 +1724,7 @@ function update(dt) {
   // the portal hums louder the closer you are, from its side of the screen
   if (AU.ctx && AU.portal) {
     let pv = 0, pp = 0;
-    if (world && world.portal && player && (S.mode === 'play' || S.mode === 'clear')) {
+    if (world && world.portal && player && (S.mode === 'play' || S.mode === 'clear' || S.mode === 'warping')) {
       const dx = world.portal.x - player.x, d = Math.hypot(dx, world.portal.y - player.y);
       pv = Math.pow(clamp(1 - d / 420, 0, 1), 1.5) * 0.09; pp = clamp(dx / 200, -1, 1);
     }
@@ -1691,7 +1733,7 @@ function update(dt) {
   }
   const musicVol = S.mode === 'title' ? 0.55 : S.mode === 'paused' ? 0.12 : 0.45;
   // (while dying, the background noise drops so the kill sound cuts through)
-  const bgK = S.mode === 'paused' ? 0 : S.mode === 'title' ? 0.1 : S.mode === 'dying' ? 0.25 : S.mode === 'dead' ? 0.6 : lateK();
+  const bgK = S.mode === 'paused' || S.mode === 'warping' || S.mode === 'beyond' ? 0 : S.mode === 'title' ? 0.1 : S.mode === 'dying' ? 0.25 : S.mode === 'dead' ? 0.6 : lateK();
   audioUpdate(bgK * (1 - S.pure), hum, pan, screamK() * (1 - S.pure * 0.85), musicVol);
 }
 
@@ -1719,9 +1761,11 @@ function updatePlay(dt, k) {
     }
     // right in the MIDDLE: your screen's corners fill with portal energy
     // (it builds up slowly while you stay, and fades when you leave)
-    // (builds up over ~12 s while you stay — bigger and bigger — and fades fast when you leave)
+    // (builds up over 4 s while you stay — bigger and bigger — and fades when you leave)
     const inMiddle = d < 26;
-    S.core = inMiddle ? Math.min(1, S.core + dt / 12) : Math.max(0, S.core - dt * 0.8);
+    S.core = inMiddle ? Math.min(1, S.core + dt / 4) : Math.max(0, S.core - dt * 0.8);
+    S.coreT = inMiddle ? (S.coreT || 0) + dt : 0;
+    if (S.coreT >= 4) { startWarp(); return; }                       // 4 seconds in the middle... it takes you
   } else S.core = Math.max(0, S.core - dt * 2);
 
   // --- bump into Rifts (they're egg-shaped, so squash y). Standing right
@@ -2057,7 +2101,7 @@ function crackLines(lines, ox, oy) {
 // pal = the colors: red + white normally, blue + white for the portal
 const RED_BOLTS = { glow: '#ff0000', core: '#fff', spr: null };
 const BLUE_BOLTS = { glow: '#5b62ff', core: '#ebe6ff', spr: null };
-function drawBolts(bolts, ox, oy, pal = RED_BOLTS) {
+function drawBolts(bolts, ox, oy, pal = RED_BOLTS, alpha = 1) {        // alpha = fade the whole thing
   const GL = pal === BLUE_BOLTS ? GLOW_BLUE : GLOW;
   const T = S.t, strike = Math.floor(T * 14);
   const shaped = bolts.map(([ln, id, full]) => {             // full = always reach all the way
@@ -2071,6 +2115,7 @@ function drawBolts(bolts, ox, oy, pal = RED_BOLTS) {
     return [pts, id];
   });
   const path = list => { g.beginPath(); for (const [pts] of list) pts.forEach(([x, y], i) => i ? g.lineTo(x, y) : g.moveTo(x, y)); };
+  g.globalAlpha = alpha;
   g.strokeStyle = pal.glow; g.lineWidth = 3; path(shaped); g.stroke();
   g.strokeStyle = pal.core; g.lineWidth = 1; path(shaped); g.stroke();
   const flashing = shaped.filter(([, id]) => hash2(id, Math.floor(T * 8), 6) < 0.05);   // white-hot flash
@@ -2092,7 +2137,7 @@ function drawBolts(bolts, ox, oy, pal = RED_BOLTS) {
     const period = 1.1 + (id % 7) * 0.3, ph = ((T + id * 0.37) % period) / period;
     const f = ph * (n - 1), i = Math.min(n - 2, Math.floor(f)), u = f - i;
     const sx = lerp(pts[i][0], pts[i + 1][0], u), sy = lerp(pts[i][1], pts[i + 1][1], u);
-    glowAt(sx, sy, 9, 9, 0.6, GL);
+    glowAt(sx, sy, 9, 9, 0.6 * alpha, GL); g.globalAlpha = alpha;
     g.fillStyle = '#fff'; g.fillRect(Math.round(sx) - 1, Math.round(sy) - 1, 3, 3);
     if (ph > 0.9) {                                        // ...and it POPS at the tip
       const [tx, ty] = pts[n - 1];
@@ -2102,6 +2147,7 @@ function drawBolts(bolts, ox, oy, pal = RED_BOLTS) {
       }
     }
   }
+  g.globalAlpha = 1;
 }
 
 function drawEdge(camX, camY) {
@@ -3182,15 +3228,15 @@ function drawHUD(k, late) {
   const danger = S.time < CFG.corruptAt;
   const blink = S.time < 30 && Math.floor(S.t * 4) % 2;
   const jx = late > 0 && rnd() < calm ? ri(-1, 1) * Math.round(late * 3) : 0;
-  // PURIFIED timer: purple near the portal (paler while it rewinds)
-  const purified = S.pure > 0.35, pur = S.rewinding ? '#cbbcff' : '#9a86ff';
-  const tcol = purified ? pur : danger ? (blink ? '#fff' : '#ff0000') : '#fff';
-  text(str, W / 2 + jx, 8, 3, tcol, (0.12 + late * 0.8 + S.rift * 0.5) * calm, 'center');
-  // a frame around the timer (corner brackets) + a bar showing how much time is left
-  const fw = textWidth('00:00', 3) + 14, fx = Math.round(W / 2 - fw / 2) + jx, fc = purified ? pur : danger ? '#ff0000' : '#fff';
-  // THE PORTAL'S LIGHTNING swarms the timer — more bolts the closer you are
-  if (S.pure > 0.2) {
-    const nb = Math.round(S.pure * 7), fq2 = Math.floor(S.t * 12), bolts = [];
+  // near The Portal the timer keeps its colours, with a BLUE GLOW behind it.
+  // 'blue' eases in and out with a smoothstep curve (slow start, slow end)
+  const fw = textWidth('00:00', 3) + 14, fx = Math.round(W / 2 - fw / 2) + jx, fc = danger ? '#ff0000' : '#fff';
+  const blue = S.pure * S.pure * (3 - 2 * S.pure);
+  if (blue > 0.01) glowAt(W / 2, 19, fw * 0.9, 26, 0.75 * blue, GLOW_BLUE);          // behind the digits
+  text(str, W / 2 + jx, 8, 3, danger ? (blink ? '#fff' : '#ff0000') : '#fff', (0.12 + late * 0.8 + S.rift * 0.5) * calm, 'center');
+  // THE PORTAL'S LIGHTNING swarms the timer — fading in and out with the glow
+  if (blue > 0.02) {
+    const nb = Math.max(1, Math.round(blue * 7)), fq2 = Math.floor(S.t * 12), bolts = [];
     const per = u => {                                          // a point on the timer's frame, u = 0..1 around it
       const pw = fw, ph = 32, L = (pw + ph) * 2; let d = u * L;
       if (d < pw) return [fx + d, 3]; d -= pw;
@@ -3207,8 +3253,7 @@ function drawHUD(k, late) {
       }
       bolts.push([pts, 700 + i, true]);
     }
-    glowAt(W / 2, 19, fw * 0.8, 24, 0.4 * S.pure, GLOW_BLUE);
-    drawBolts(bolts, 0, 0, BLUE_BOLTS);
+    drawBolts(bolts, 0, 0, BLUE_BOLTS, blue);
   }
   bracket(fx, 3, fw, 32, 5, fc);
   g.fillStyle = '#262626'; g.fillRect(fx + 4, 31, fw - 8, 2);
@@ -3559,6 +3604,56 @@ function drawPortalTunnel(k, px, py) {
   drawBolts(bolts, 0, 0, BLUE_BOLTS);
 }
 
+// THE WARP: take a copy of the finished picture and paint it back in rings
+// around the middle, each ring TWISTED and rippled. The warp starts at the
+// edges and its front moves inward until it covers the whole screen. Then the
+// whole warped picture shrinks away (spinning) into a single dot.
+function applyWarp(t) {
+  const cx = W / 2, cy = H / 2, R = Math.hypot(W, H) / 2 + 4;
+  const reach = clamp(t / WARP.whole, 0, 1), r0 = R * (1 - reach);       // warping happens OUTSIDE r0
+  const strength = Math.min(1, t / 2);
+  sg.globalCompositeOperation = 'source-over'; sg.drawImage(cv, 0, 0);
+  const NR = 12;
+  for (let k = NR - 1; k >= 0; k--) {
+    const ra = lerp(r0, R, k / NR), rb = lerp(r0, R, (k + 1) / NR), rm = (ra + rb) / 2;
+    const e = (rm - r0) / Math.max(1, R - r0);                           // 0 = at the warp's front ... 1 = the screen edge
+    const twist = strength * Math.pow(e, 1.5) * (0.85 + 0.45 * Math.sin(t * 1.3 + rm * 0.02));
+    const pinch = 1 + strength * e * 0.17 * Math.sin(rm * 0.08 - t * 5);   // a ripple running through it
+    g.save(); g.beginPath();
+    g.arc(cx, cy, rb, 0, 6.2832); g.arc(cx, cy, Math.max(0.1, ra), 0, 6.2832); g.clip('evenodd');
+    g.translate(cx, cy); g.rotate(twist); g.scale(pinch, pinch); g.translate(-cx, -cy);
+    g.drawImage(scratch, 0, 0);
+    g.restore();
+  }
+  if (t > WARP.whole) {                                                   // ZOOM OUT into the dot
+    const u = clamp((t - WARP.whole) / (WARP.zoom - WARP.whole), 0, 1), s = Math.pow(1 - u, 2.4);
+    sg.drawImage(cv, 0, 0);
+    g.fillStyle = '#000'; g.fillRect(0, 0, W, H);
+    g.save(); g.translate(cx, cy); g.rotate(u * u * 4); g.scale(s, s); g.translate(-cx, -cy);
+    g.drawImage(scratch, 0, 0); g.restore();
+    drawBeyondDot(S.warpT, u);
+  }
+}
+// the shining dot at the end of everything (b = 0..1 how bright it is yet)
+function drawBeyondDot(t, b = 1) {
+  const cx = W / 2, cy = H / 2, p = 0.85 + 0.15 * Math.sin(t * 1.4);
+  glowAt(cx, cy, 70 * p * b, 70 * p * b, 0.5 * b, GLOW_BLUE);           // a blue/purple halo
+  glowAt(cx, cy, 22 * p, 22 * p, 0.9 * b, PDOTS[1]);                    // purple
+  g.save(); g.globalCompositeOperation = 'lighter';
+  for (const [dx, dy, len] of [[1, 0, 46], [0, 1, 30], [0.707, 0.707, 12], [0.707, -0.707, 12]]) {   // a star's rays
+    const L = len * p * b, gr = g.createLinearGradient(cx - dx * L, cy - dy * L, cx + dx * L, cy + dy * L);
+    gr.addColorStop(0, 'rgba(160,120,255,0)'); gr.addColorStop(0.5, 'rgba(235,228,255,0.9)'); gr.addColorStop(1, 'rgba(160,120,255,0)');
+    g.strokeStyle = gr; g.lineWidth = 1; g.beginPath(); g.moveTo(cx - dx * L, cy - dy * L); g.lineTo(cx + dx * L, cy + dy * L); g.stroke();
+  }
+  for (let i = 0; i < 6; i++) {                                           // a few specks drifting around it
+    const a = t * (0.2 + i * 0.05) + i, r = 24 + i * 7, s = 1.5;
+    g.globalAlpha = 0.5 * b * (0.5 + 0.5 * Math.sin(t * 2 + i));
+    g.drawImage(PDOTS[i % 2 ? 0 : 3], cx + Math.cos(a) * r - s, cy + Math.sin(a) * r * 0.7 - s, s * 2, s * 2);
+  }
+  g.restore();
+  g.fillStyle = '#fff'; g.fillRect(Math.round(cx) - 1, Math.round(cy) - 1, 3, 3);   // the white-hot middle
+}
+
 // OUCH: a solid red frame around the screen + glitch bits along the edges
 // (solid pieces, not a see-through red wash)
 function drawHitFlash() {
@@ -3618,6 +3713,8 @@ function drawDead() {
 //  RENDER — draws one frame, back to front
 // =====================================================================
 function render() {
+  // THE END OF THE PORTAL: only black and the shining dot, forever
+  if (S.mode === 'beyond') { g.fillStyle = '#000'; g.fillRect(0, 0, W, H); drawBeyondDot(S.warpT); return; }
   const k = glitchK(), late = lateV();
   const sh = S.shake + (S.mode === 'play' ? late * late * 3 + S.rift * S.rift * 2.5 * (1 - S.pure) : 0);
   const camX = Math.round(cam.x - W / 2 + rr(-sh, sh)), camY = Math.round(cam.y - H / 2 + rr(-sh, sh));
@@ -3634,7 +3731,7 @@ function render() {
   for (const f of flyers) drawShard(f.s, f.x - camX, f.y - camY, ART, k);
   if (player && S.mode !== 'dead') {
     for (const s of player.carried) drawShard(s, s.cx - camX, s.cy - camY, ART, k, 0.6);
-    if (S.mode === 'play' || S.mode === 'paused' || S.mode === 'clear' || S.mode === 'cracking') drawPlayer(camX, camY, k);
+    if (S.mode === 'play' || S.mode === 'paused' || S.mode === 'clear' || S.mode === 'cracking' || S.mode === 'warping') drawPlayer(camX, camY, k);
     else if (S.mode === 'grabbed') drawGrabbedPlayer(Math.round(player.x - camX), Math.round(player.y - camY), 'under');
   }
   for (const p of particles) {
@@ -3668,9 +3765,9 @@ function render() {
   if (S.mode === 'dying') drawJumpscare(S.dieT);
   if (S.mode === 'cracking') drawCrackDeath(S.crackT, player.x - camX, player.y - camY);
   if (S.hitFlash > 0 && S.mode === 'play') drawHitFlash();
-  if (S.core > 0.01 && (S.mode === 'play' || S.mode === 'paused')) drawPortalTunnel(S.core, player.x - camX, player.y - camY);
+  if (S.core > 0.01 && (S.mode === 'play' || S.mode === 'paused' || S.mode === 'warping')) drawPortalTunnel(S.core, player.x - camX, player.y - camY);
 
-  if (S.mode === 'play' || S.mode === 'paused' || S.mode === 'grabbed') drawHUD(k, late);
+  if (S.mode === 'play' || S.mode === 'paused' || S.mode === 'grabbed' || S.mode === 'warping') drawHUD(k, late);
   if (S.mode === 'paused') {
     dim(0.6);
     text('PAUSED', W / 2, H / 2 - 30, 4, '#fff', 0.2, 'center');
@@ -3683,6 +3780,7 @@ function render() {
   if (S.devMode && (S.mode === 'title' || S.mode === 'play' || S.mode === 'paused'))
     text('DEV MODE', 10, S.mode === 'title' ? 8 : 29, 1, '#8c8c96', 0, 'left');
   if (S.devFlash > 0 && Math.floor(S.t * 6) % 3) text('DEV MODE UNLOCKED', W / 2, H / 2 + 36, 2, '#fff', 0.25, 'center');
+  if (S.mode === 'warping') applyWarp(S.warpT);            // the WHOLE finished picture warps (HUD too)
 }
 
 // =====================================================================
