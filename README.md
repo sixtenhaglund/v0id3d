@@ -11,7 +11,8 @@ fall apart, and something in the lightning comes for you.
 | Key | What it does |
 | --- | --- |
 | WASD / arrow keys | move |
-| E | deliver your shards at The Anchor |
+| Space | dash forward (recharges in 2.5 seconds) |
+| E | deliver your shards at The Anchor (+10 seconds each) — or use a Locator to find the nearest shard |
 | F | fullscreen |
 | M | mute |
 | Esc | pause |
