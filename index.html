@@ -44,7 +44,8 @@ const CFG = {
   riftDamage: 1,          // standing right against a Rift...
   riftDamageEvery: 2,     // ...hurts this often (seconds)
   nodeSpeed: 32,          // how fast Nodes drift (you move 115)
-  nodeLink: 70,           // Nodes closer than this form a node connection
+  nodeLink: 120,          // Nodes closer than this form a node connection
+  nodeDrift: 120,         // seconds until the groups have fully drifted apart (lonely Nodes die after 5 s)
   testPortalFirstArea: false,
 };
 
@@ -55,7 +56,7 @@ const CFG = {
 //  reloads into the new version. build-site.js stamps a real number in here
 //  for the website; 'dev' (your own copy) never checks.
 // =====================================================================
-const BUILD_ID = '20260912204259';
+const BUILD_ID = '20260912205343';
 function checkForUpdate(then = null, resume = null) {
   if (BUILD_ID === 'dev' || location.protocol === 'file:') { if (then) then(); return; }
   if (S.checking) return;
@@ -799,6 +800,8 @@ const SFX = {
       o.connect(gn).connect(AU.master); o.start(t + WARP.zoom - 0.3);   // (never stopped)
     }
   },
+  // A NODE DIES: a descending, fizzling little zap
+  nodeDie(pan) { blip([700, 500, 330, 200, 120], 0.05, 0.04, 'square', pan); burst(0.3, 0.1, 1500, 2, true, pan, 200); },
   // RIP: you tear apart
   tear() { burst(0.5, 0.7, 1200, 0.4, true); burst(0.3, 0.5, 6000, 1, false, 0, 300); thump(0.9, 180, 30, 0.5); },
   // the cutscene build-up: a rumble, rising noise and a rising tone that all
@@ -1429,7 +1432,7 @@ function genWorld(n, seed, portal = 0) {
   w.total = w.shards.length;
   // NODES: clumps of 3-8, away from The Anchor, the Rifts and The Portal
   w.nodes = []; w.links = [];
-  const clumps = Math.max(3, Math.round(2 + n / 5));
+  const clumps = 2 + Math.floor(R() * 3);                   // 2-4 groups each level
   for (let c = 0; c < clumps; c++) {
     let cx = 0, cy = 0;
     for (let tries = 0; tries < 300; tries++) {
@@ -1440,7 +1443,7 @@ function genWorld(n, seed, portal = 0) {
       break;
     }
     for (let i = 0, size = 3 + Math.floor(R() * 6); i < size; i++)
-      w.nodes.push({ x: cx + (R() - 0.5) * 60, y: cy + (R() - 0.5) * 60, vx: 0, vy: 0,
+      w.nodes.push({ x: cx + (R() - 0.5) * 130, y: cy + (R() - 0.5) * 130, vx: 0, vy: 0,   // spread out
                      ang: R() * 6.283, turn: 0, clump: c, id: w.nodes.length, spin: R() * 6.283 });
   }
   // break this area's seal into exactly one piece per shard
@@ -2659,19 +2662,24 @@ function updateNodes(dt) {
     const out = pd > er - 220 ? -1 : pd < 380 ? 1 : 0;
     if (out) { const want = Math.atan2(my * out, mx * out), diff = ((want - cd.ang + 9.425) % 6.283) - 3.1416; cd.ang += diff * 1.2 * dt; }
   }
+  // the groups slowly DRIFT APART: as time goes on, "stick with your group"
+  // fades away and each Node follows its own wander more and more
+  world.age = (world.age || 0) + dt;
+  const together = Math.max(0, 1 - world.age / CFG.nodeDrift);             // 1 = tight group ... 0 = everyone on their own
   for (const nd of N) {
-    // ...and each Node wobbles around that with a little wander of its own
+    // ...and each Node wobbles around that with a wander of its own
     nd.turn = clamp(nd.turn + (rnd() - 0.5) * 3 * dt, -1, 1);
     nd.ang += nd.turn * dt;
-    const cd = world.clumpDir[nd.clump];
-    let tx = Math.cos(cd.ang) * CFG.nodeSpeed + Math.cos(nd.ang) * CFG.nodeSpeed * 0.45;
-    let ty = Math.sin(cd.ang) * CFG.nodeSpeed + Math.sin(nd.ang) * CFG.nodeSpeed * 0.45;
+    const cd = world.clumpDir[nd.clump], own = 0.45 + (1 - together) * 0.8;
+    const sp = nd.dead ? CFG.nodeSpeed * 0.35 : CFG.nodeSpeed;               // dead Nodes just float, slowly
+    let tx = (Math.cos(cd.ang) * together * !nd.dead + Math.cos(nd.ang) * own) * sp;
+    let ty = (Math.sin(cd.ang) * together * !nd.dead + Math.sin(nd.ang) * own) * sp;
     const m = mid[nd.clump], mx = m.x / m.n - nd.x, my = m.y / m.n - nd.y, md = Math.hypot(mx, my);
-    if (md > 45) { tx += mx / md * 22; ty += my / md * 22; }                 // stay (loosely) with your clump
-    for (const o of N) {                                                     // don't sit on each other
+    if (md > 90 && !nd.dead) { tx += mx / md * 22 * together; ty += my / md * 22 * together; }   // stay (loosely) with your group
+    for (const o of N) {                                                     // keep your distance from each other
       if (o === nd) continue;
       const dx = nd.x - o.x, dy = nd.y - o.y, d = Math.hypot(dx, dy);
-      if (d < 18 && d > 0) { tx += dx / d * 30; ty += dy / d * 30; }
+      if (d < 42 && d > 0) { tx += dx / d * 26; ty += dy / d * 26; }
     }
     for (const b of world.blobs) {                                           // steer around Rifts
       const dx = nd.x - b.x, dy = nd.y - b.y, d = Math.hypot(dx, dy);
@@ -2684,14 +2692,27 @@ function updateNodes(dt) {
     nd.vx += (tx - nd.vx) * e; nd.vy += (ty - nd.vy) * e;
     nd.x += nd.vx * dt; nd.y += nd.vy * dt;
   }
-  // node connections: every pair closer than nodeLink. s = strength: it
-  // flickers weakly right at the limit and is solid when they're close
+  // node connections: every pair of LIVING Nodes closer than nodeLink. s =
+  // strength: it flickers weakly right at the limit and is solid when close
   const links = [];
+  for (const nd of N) nd.linked = false;
   for (let i = 0; i < N.length; i++) for (let j = i + 1; j < N.length; j++) {
+    if (N[i].dead || N[j].dead) continue;
     const d = Math.hypot(N[i].x - N[j].x, N[i].y - N[j].y);
-    if (d < CFG.nodeLink) links.push([N[i], N[j], clamp((CFG.nodeLink - d) / 15, 0, 1)]);
+    if (d < CFG.nodeLink) { links.push([N[i], N[j], clamp((CFG.nodeLink - d) / 15, 0, 1)]); N[i].linked = N[j].linked = true; }
   }
   world.links = links;
+  // a Node with NO connection for 5 seconds DIES: it goes dark and pale,
+  // never connects again, and just floats around forever
+  for (const nd of N) {
+    if (nd.dead) { nd.deadT += dt; continue; }
+    nd.lonely = nd.linked ? 0 : (nd.lonely || 0) + dt;
+    if (nd.lonely >= 5) {
+      nd.dead = true; nd.deadT = 0;
+      burstParticles(nd.x, nd.y, 10, 0.5, ['#ff0000', '#600000', '#444']);
+      if (player && Math.hypot(nd.x - player.x, nd.y - player.y) < 260) SFX.nodeDie(clamp((nd.x - player.x) / 200, -1, 1));
+    }
+  }
 }
 
 function drawNodes(camX, camY) {
@@ -2714,20 +2735,24 @@ function drawNodes(camX, camY) {
       pts.forEach(([px, py], i) => i ? g.lineTo(px, py) : g.moveTo(px, py)); g.stroke();
     }
   }
-  // the NODES: a small red core with spikes spinning around it
+  // the NODES: a small red core with spikes spinning around it.
+  // A lonely one FLICKERS as its 5 seconds run out... and a dead one is dark,
+  // pale and still (it fades into that look over 1 second)
   for (const nd of world.nodes) {
     const x = nd.x - camX, y = nd.y - camY;
     if (x < -20 || x > W + 20 || y < -20 || y > H + 20) continue;
-    glowAt(x, y, 18, 18, 0.6);
-    const sp = T * 2.5 + nd.spin, pulse = 0.85 + 0.15 * Math.sin(T * 6 + nd.spin);
-    g.strokeStyle = '#ff0000'; g.lineWidth = 1; g.beginPath();
-    for (let i = 0; i < 8; i++) {                                            // spikes spinning around it
-      const a = sp + i * 0.7854, r = (i % 2 ? 10 : 7) * pulse;
+    const d = nd.dead ? Math.min(1, nd.deadT) : 0;                          // 0 = alive ... 1 = fully dead
+    if (!nd.dead && nd.lonely > 2 && hash2(nd.id, Math.floor(T * (6 + nd.lonely * 3)), 83) < 0.35) continue;   // dying: flicker
+    if (d < 1) glowAt(x, y, 18, 18, 0.6 * (1 - d));
+    const sp = nd.dead ? nd.spin : T * 2.5 + nd.spin, pulse = nd.dead ? 0.7 : 0.85 + 0.15 * Math.sin(T * 6 + nd.spin);
+    g.strokeStyle = d > 0.5 ? '#3a2226' : '#ff0000'; g.lineWidth = 1; g.beginPath();
+    for (let i = 0; i < 8; i++) {                                            // spikes (dead: short and still)
+      const a = sp + i * 0.7854, r = (i % 2 ? 10 : 7) * pulse * (1 - d * 0.35);
       g.moveTo(x + Math.cos(a) * 3.5, y + Math.sin(a) * 3.5); g.lineTo(x + Math.cos(a) * r, y + Math.sin(a) * r);
     }
     g.stroke();
     diamond(x, y, 5.5, '#000');                                              // a black rim so it stands out
-    diamond(x, y, 4.5, '#ff0000'); diamond(x, y, 2, '#fff');
+    diamond(x, y, 4.5, d > 0.5 ? '#4a2a2e' : '#ff0000'); diamond(x, y, 2, d > 0.5 ? '#6e6a70' : '#fff');
   }
 }
 
@@ -3547,48 +3572,53 @@ function drawClear() {
   g.globalAlpha = 1;
 }
 
+// SMOOTH RANDOM: a random value at every whole step of t, blended smoothly in
+// between — so it wanders randomly but never jumps. (i = which one, seed = which kind)
+function vnoise(i, t, seed) {
+  const a = Math.floor(t), f = t - a, s = f * f * (3 - 2 * f);
+  return lerp(hash2(i, a, seed), hash2(i, a + 1, seed), s);
+}
+
 // IN THE PORTAL'S MIDDLE — it works like the time-out effect, but it's The
-// Portal's own space closing in: a smooth blue/purple tunnel of deep, starry
-// space eats your screen from the edges, and blue lightning reaches for you
-// from its rim. k = 0..1 grows over ~12 s while you stay: the tunnel closes
-// in and the bolts get longer, more numerous and thicker. It never hurts you.
+// Portal's own space closing in. It FADES in smoothly and it's SEE-THROUGH:
+// a soft glow of starry blue/purple space that thickens toward the screen
+// edges, with lightning reaching for you from its rim. k = 0..1 grows while
+// you stay. It never hurts you.
 function drawPortalTunnel(k, px, py) {
   const T = S.t, cx = W / 2, cy = H / 2;
-  const size = 1.5 - k * 0.95;                              // 1.5 = off the screen ... 0.55 = closed in a lot
-  const ax = W * 0.5 * size, by = H * 0.5 * size;
-  // the rim: an oval that slowly breathes (smooth waves only — The Portal isn't glitchy)
-  const rimPts = [];
+  const kk = k * k * (3 - 2 * k);                            // smoothstep: eases in, no sudden switch
+  const size = 1.5 - kk * 0.95, ax = W * 0.5 * size, by = H * 0.5 * size;
+  const rimPts = [];                                          // the rim breathes (smooth waves only)
   for (let i = 0; i < 96; i++) {
     const a = i / 96 * 6.283, m = 1 + 0.04 * Math.sin(a * 3 + T * 0.8) + 0.025 * Math.sin(a * 5 - T * 1.2);
     rimPts.push([cx + Math.cos(a) * ax * m, cy + Math.sin(a) * by * m]);
   }
-  // 1) the wall: The Portal's deep space, filling everything OUTSIDE the rim
-  g.save(); g.beginPath(); g.rect(0, 0, W, H);
-  rimPts.forEach(([x, y], i) => i ? g.lineTo(x, y) : g.moveTo(x, y)); g.closePath();
-  g.clip('evenodd');
-  g.fillStyle = '#0a0628'; g.fillRect(0, 0, W, H);
-  g.globalCompositeOperation = 'lighter';
-  for (let i = 0; i < 4; i++) {                             // faint drifting nebula
-    const a = T * (0.07 + i * 0.03) + i * 1.6;
-    g.globalAlpha = 0.12; g.drawImage(PDOTS[i % 2 ? 1 : 2], cx + Math.cos(a) * W * 0.4 - 90, cy + Math.sin(a) * H * 0.4 - 90, 180, 180);
-  }
-  const cell = 18;                                          // twinkling stars, slowly drifting
+  // 1) The Portal's space: a see-through glow, clear in the middle and
+  //    thicker toward the edges (an oval gradient — squash a circle with scale)
+  g.save(); g.translate(cx, cy); g.scale(1, by / ax);
+  const gr = g.createRadialGradient(0, 0, ax * 0.78, 0, 0, ax * 1.5);
+  gr.addColorStop(0, 'rgba(60,35,170,0)'); gr.addColorStop(0.35, `rgba(60,35,170,${0.22 * kk})`); gr.addColorStop(1, `rgba(22,10,80,${0.72 * kk})`);
+  g.fillStyle = gr; g.fillRect(-W * 2, -W * 2, W * 4, W * 4);
+  g.restore();
+  // its stars only show in the glow (the further out, the more you see)
+  g.save(); g.globalCompositeOperation = 'lighter';
+  const cell = 18;
   for (let i = -1; i <= W / cell; i++) for (let j = -1; j <= H / cell; j++) {
     const h = hash2(i, j, 131); if (h > 0.5) continue;
     const x = i * cell + hash2(i, j, 132) * cell + (T * 6) % cell, y = j * cell + hash2(i, j, 133) * cell;
+    const v = clamp((Math.hypot((x - cx) / ax, (y - cy) / by) - 0.85) / 0.5, 0, 1) * kk;
+    if (v < 0.02) continue;
     const tw = 0.5 + 0.5 * Math.sin(T * (1 + h * 3) + h * 30), s = 1 + h * 3;
-    g.globalAlpha = 0.35 + tw * 0.6; g.drawImage(PDOTS[(hash2(i, j, 134) * 4) | 0], x - s, y - s, s * 2, s * 2);
+    g.globalAlpha = v * (0.35 + tw * 0.6); g.drawImage(PDOTS[(hash2(i, j, 134) * 4) | 0], x - s, y - s, s * 2, s * 2);
   }
   g.restore();
-  // 2) a glowing lavender rim, brighter as it closes in
-  glowLine(rimPts, 0, 0, 90 + k * 60, 0.5 + k * 0.6, '#6a4dff');
-  g.strokeStyle = '#e4dcff'; g.lineWidth = 1; g.globalAlpha = 0.5 + k * 0.5; g.beginPath();
-  rimPts.forEach(([x, y], i) => i ? g.lineTo(x, y) : g.moveTo(x, y)); g.closePath(); g.stroke(); g.globalAlpha = 1;
+  // 2) a soft glowing rim (no hard line)
+  glowLine(rimPts, 0, 0, 90 + kk * 60, (0.35 + kk * 0.6) * kk, '#6a4dff');
   // 3) LIGHTNING REACHING FOR YOU from the rim — more, longer and thicker as k grows
-  const n = Math.round(4 + k * 12), slow = Math.floor(T * 2), bolts = [];
+  const n = Math.round(4 + kk * 12), slow = Math.floor(T * 2), bolts = [];
   for (let i = 0; i < n; i++) {
     const [x0, y0] = rimPts[Math.floor(((i / n) + T * 0.01) % 1 * rimPts.length)];
-    const f = Math.min(0.92, (0.25 + k * 0.7) * (0.7 + 0.3 * hash2(i, 1, 141)));   // how far toward you it gets
+    const f = Math.min(0.92, (0.25 + kk * 0.7) * (0.7 + 0.3 * hash2(i, 1, 141)));
     const ex = lerp(x0, px, f), ey = lerp(y0, py, f), len = Math.hypot(ex - x0, ey - y0) || 1;
     const nx = -(ey - y0) / len, ny = (ex - x0) / len, ln = [];
     for (let s = 0; s <= 9; s++) {
@@ -3597,43 +3627,98 @@ function drawPortalTunnel(k, px, py) {
     }
     bolts.push([ln, 800 + i]);
   }
-  if (k > 0.3) {                                            // thicker: a wide soft purple glow under the bolts
-    g.save(); g.globalCompositeOperation = 'lighter'; g.strokeStyle = '#5b3dff'; g.globalAlpha = (k - 0.3) * 0.5; g.lineWidth = 3 + k * 5;
+  if (kk > 0.3) {                                           // thicker: a wide soft purple glow under the bolts
+    g.save(); g.globalCompositeOperation = 'lighter'; g.strokeStyle = '#5b3dff'; g.globalAlpha = (kk - 0.3) * 0.5; g.lineWidth = 3 + kk * 5;
     g.beginPath(); for (const [ln] of bolts) ln.forEach(([x, y], i) => i ? g.lineTo(x, y) : g.moveTo(x, y)); g.stroke(); g.restore();
   }
+  drawBolts(bolts, 0, 0, BLUE_BOLTS, Math.min(1, kk * 1.6));
+}
+
+// THE STORM (during the portal sequence): a new set of long blue bolts about
+// 6 times a second, crackling all across the screen — more and more of them
+function drawWarpStorm(t) {
+  const cx = W / 2, cy = H / 2, grow = Math.min(1, t / WARP.whole), n = Math.round(5 + grow * 25), bolts = [];
+  for (let i = 0; i < n; i++) {
+    const sd = Math.floor(t * 6 + i * 0.37) * 53 + i;        // each bolt lives ~1/6 s, then a new one
+    const a0 = hash2(sd, 1, 161) * 6.283, a1 = a0 + (hash2(sd, 2, 161) - 0.5) * 2.6;
+    const r0 = (0.35 + hash2(sd, 3, 161) * 0.9) * W * 0.5, r1 = hash2(sd, 4, 161) * W * 0.3;
+    const x0 = cx + Math.cos(a0) * r0, y0 = cy + Math.sin(a0) * r0 * 0.6, x1 = cx + Math.cos(a1) * r1, y1 = cy + Math.sin(a1) * r1 * 0.6;
+    const len = Math.hypot(x1 - x0, y1 - y0) || 1, nx = -(y1 - y0) / len, ny = (x1 - x0) / len, ln = [];
+    for (let s = 0; s <= 10; s++) {
+      const u = s / 10, wig = (hash2(sd * 11 + s, 5, 161) - 0.5) * Math.min(40, len * 0.25) * Math.sin(u * Math.PI);
+      ln.push([lerp(x0, x1, u) + nx * wig, lerp(y0, y1, u) + ny * wig]);
+    }
+    bolts.push([ln, 1000 + i, true]);
+  }
+  g.save(); g.globalCompositeOperation = 'lighter'; g.strokeStyle = '#5b3dff'; g.globalAlpha = 0.35 + grow * 0.3; g.lineWidth = 4 + grow * 4;
+  g.beginPath(); for (const [ln] of bolts) ln.forEach(([x, y], i) => i ? g.lineTo(x, y) : g.moveTo(x, y)); g.stroke(); g.restore();
   drawBolts(bolts, 0, 0, BLUE_BOLTS);
 }
 
-// THE WARP: take a copy of the finished picture and paint it back in rings
-// around the middle, each ring TWISTED and rippled. The warp starts at the
-// edges and its front moves inward until it covers the whole screen. Then the
-// whole warped picture shrinks away (spinning) into a single dot.
+// THE WARP: copy the finished picture and paint it back in rings around the
+// middle. Each ring is twisted, rippled and nudged by its OWN smooth random
+// values (so it's never neat circles), starting at the edges and spreading in.
+// At the same time the whole screen BENDS BACKWARDS — the outer rings are
+// squeezed toward the middle, like a ball curving away from you — and the
+// edges and corners sink into the dark. Then it all shrinks into the dot.
 function applyWarp(t) {
   const cx = W / 2, cy = H / 2, R = Math.hypot(W, H) / 2 + 4;
-  const reach = clamp(t / WARP.whole, 0, 1), r0 = R * (1 - reach);       // warping happens OUTSIDE r0
-  const strength = Math.min(1, t / 2);
+  const reach = clamp(t / WARP.whole, 0, 1), r0 = R * (1 - reach);       // the twisting happens OUTSIDE r0
+  const strength = Math.min(1, t / 2), bend = Math.min(1, t / WARP.whole);
   sg.globalCompositeOperation = 'source-over'; sg.drawImage(cv, 0, 0);
-  const NR = 12;
+  // fade the picture's OWN edges to black first — in an oval that matches the
+  // screen — so when it's squeezed and twisted, no straight rectangle edge shows
+  sg.save(); sg.translate(cx, cy); sg.scale(1, H / W);
+  // (in these squashed units the screen's border is exactly W/2 away in every direction)
+  const fe = sg.createRadialGradient(0, 0, W * 0.5 * (0.98 - 0.5 * bend), 0, 0, W * 0.5);
+  fe.addColorStop(0, 'rgba(0,0,0,0)'); fe.addColorStop(1, `rgba(0,0,0,${Math.min(1, bend * 5)})`);
+  sg.fillStyle = fe; sg.fillRect(-W, -W, W * 2, W * 2); sg.restore();
+  g.fillStyle = '#000'; g.fillRect(0, 0, W, H);
+  const NR = 14;
   for (let k = NR - 1; k >= 0; k--) {
-    const ra = lerp(r0, R, k / NR), rb = lerp(r0, R, (k + 1) / NR), rm = (ra + rb) / 2;
-    const e = (rm - r0) / Math.max(1, R - r0);                           // 0 = at the warp's front ... 1 = the screen edge
-    const twist = strength * Math.pow(e, 1.5) * (0.85 + 0.45 * Math.sin(t * 1.3 + rm * 0.02));
-    const pinch = 1 + strength * e * 0.17 * Math.sin(rm * 0.08 - t * 5);   // a ripple running through it
+    const ra = R * k / NR, rb = R * (k + 1) / NR, rm = (ra + rb) / 2;
+    const e = clamp((rm - r0) / Math.max(1, R - r0), 0, 1);               // 0 = not reached yet ... 1 = the screen edge
+    const twist = strength * Math.pow(e, 1.5) * ((vnoise(k, t * 0.8, 151) - 0.5) * 2.4 + 0.35);   // random amount AND direction
+    const ripple = 1 + strength * e * 0.16 * (vnoise(k, t * 2.5, 152) - 0.5) * 2;
+    const ox = strength * e * (vnoise(k, t * 1.7, 153) - 0.5) * 12, oy = strength * e * (vnoise(k, t * 1.7, 154) - 0.5) * 8;
+    const back = 1 - 0.38 * bend * Math.pow(rm / R, 2);                   // bending backwards: squeeze the outside inward
     g.save(); g.beginPath();
-    g.arc(cx, cy, rb, 0, 6.2832); g.arc(cx, cy, Math.max(0.1, ra), 0, 6.2832); g.clip('evenodd');
-    g.translate(cx, cy); g.rotate(twist); g.scale(pinch, pinch); g.translate(-cx, -cy);
+    g.arc(cx, cy, rb, 0, 6.2832); if (ra > 0.5) g.arc(cx, cy, ra, 0, 6.2832); g.clip('evenodd');
+    g.translate(cx + ox, cy + oy); g.rotate(twist); g.scale(ripple * back, ripple * back); g.translate(-cx, -cy);
     g.drawImage(scratch, 0, 0);
     g.restore();
   }
-  if (t > WARP.whole) {                                                   // ZOOM OUT into the dot
+  // the edges and corners sink into the dark (a round shadow — no rectangle)
+  g.save(); g.translate(cx, cy); g.scale(1, H / W);
+  const dark = g.createRadialGradient(0, 0, W * 0.5 * (0.95 - 0.55 * bend), 0, 0, W * 0.53);
+  dark.addColorStop(0, 'rgba(0,0,0,0)'); dark.addColorStop(1, `rgba(0,0,0,${Math.min(1, 0.4 + bend * 1.2)})`);
+  g.fillStyle = dark; g.fillRect(-W, -W, W * 2, W * 2); g.restore();
+
+  if (t > WARP.whole) {                                                   // it all SHRINKS into the dot
     const u = clamp((t - WARP.whole) / (WARP.zoom - WARP.whole), 0, 1), s = Math.pow(1 - u, 2.4);
     sg.drawImage(cv, 0, 0);
     g.fillStyle = '#000'; g.fillRect(0, 0, W, H);
-    g.save(); g.translate(cx, cy); g.rotate(u * u * 4); g.scale(s, s); g.translate(-cx, -cy);
+    g.save(); g.translate(cx, cy); g.rotate(u * u * 2); g.scale(s, s); g.translate(-cx, -cy);
     g.drawImage(scratch, 0, 0); g.restore();
+    // a round dark mask around it, so it's a glowing ball, never a rectangle
+    const rr = Math.max(2, R * s);
+    const mask = g.createRadialGradient(cx, cy, rr * 0.3, cx, cy, rr * 0.75);
+    mask.addColorStop(0, 'rgba(0,0,0,0)'); mask.addColorStop(1, 'rgba(0,0,0,1)');
+    g.fillStyle = mask; g.fillRect(0, 0, W, H);
+    // lightning crackling around the shrinking ball
+    const bolts = [], ringR = rr * 0.5 + 6, nb = Math.round(4 + 10 * (1 - u));
+    for (let i = 0; i < nb; i++) {
+      const sd = Math.floor(t * 10) * 31 + i, a = hash2(sd, 1, 171) * 6.283, len = 12 + hash2(sd, 2, 171) * (20 + 50 * (1 - u));
+      let x = cx + Math.cos(a) * ringR, y = cy + Math.sin(a) * ringR, h = a + (hash2(sd, 3, 171) - 0.5) * 1.5;
+      const ln = [[x, y]];
+      for (let st = 0; st < 6; st++) { h += (hash2(sd * 7 + st, 4, 171) - 0.5) * 1.1; x += Math.cos(h) * len / 6; y += Math.sin(h) * len / 6; ln.push([x, y]); }
+      bolts.push([ln, 1100 + i, true]);
+    }
+    drawBolts(bolts, 0, 0, BLUE_BOLTS, 1 - u * 0.5);
     drawBeyondDot(S.warpT, u);
   }
 }
+
 // the shining dot at the end of everything (b = 0..1 how bright it is yet)
 function drawBeyondDot(t, b = 1) {
   const cx = W / 2, cy = H / 2, p = 0.85 + 0.15 * Math.sin(t * 1.4);
@@ -3651,6 +3736,19 @@ function drawBeyondDot(t, b = 1) {
     g.drawImage(PDOTS[i % 2 ? 0 : 3], cx + Math.cos(a) * r - s, cy + Math.sin(a) * r * 0.7 - s, s * 2, s * 2);
   }
   g.restore();
+  // tiny arcs of lightning flickering around it, forever
+  const arcs = [];
+  for (let i = 0; i < 3; i++) {
+    const sd = Math.floor(t * 7) * 13 + i;
+    if (hash2(sd, 9, 181) > 0.6) continue;
+    const a0 = hash2(sd, 1, 181) * 6.283, a1 = a0 + 0.6 + hash2(sd, 2, 181) * 1.2, r = 10 + hash2(sd, 3, 181) * 16, ln = [];
+    for (let s = 0; s <= 6; s++) {
+      const a = lerp(a0, a1, s / 6), rj = r + (hash2(sd * 5 + s, 4, 181) - 0.5) * 6;
+      ln.push([cx + Math.cos(a) * rj, cy + Math.sin(a) * rj * 0.8]);
+    }
+    arcs.push([ln, 1200 + i, true]);
+  }
+  if (arcs.length) drawBolts(arcs, 0, 0, BLUE_BOLTS, 0.7 * b);
   g.fillStyle = '#fff'; g.fillRect(Math.round(cx) - 1, Math.round(cy) - 1, 3, 3);   // the white-hot middle
 }
 
@@ -3766,6 +3864,7 @@ function render() {
   if (S.mode === 'cracking') drawCrackDeath(S.crackT, player.x - camX, player.y - camY);
   if (S.hitFlash > 0 && S.mode === 'play') drawHitFlash();
   if (S.core > 0.01 && (S.mode === 'play' || S.mode === 'paused' || S.mode === 'warping')) drawPortalTunnel(S.core, player.x - camX, player.y - camY);
+  if (S.mode === 'warping') drawWarpStorm(S.warpT);          // MORE LIGHTNING >:)
 
   if (S.mode === 'play' || S.mode === 'paused' || S.mode === 'grabbed' || S.mode === 'warping') drawHUD(k, late);
   if (S.mode === 'paused') {
