@@ -37,6 +37,14 @@ const CFG = {
   testStartCarried: 0,
   portalChance: 0.2,      // the blue portal shows up in 1 of every 5 areas
   pureRange: 280,         // how far (pixels) the portal's calm reaches: glitching fades as you get closer
+  portalPull: 120,        // how hard The Portal drags you in (it wins inside ~75 px — don't go too close!)
+  maxHp: 100,             // your health
+  nodeDamage: 8,          // walking into a node connection
+  hitCooldown: 0.9,       // after a hit you can't be hit again for this long (seconds)
+  riftDamage: 1,          // standing right against a Rift...
+  riftDamageEvery: 2,     // ...hurts this often (seconds)
+  nodeSpeed: 32,          // how fast Nodes drift (you move 115)
+  nodeLink: 70,           // Nodes closer than this form a node connection
   testPortalFirstArea: false,
 };
 
@@ -47,7 +55,7 @@ const CFG = {
 //  reloads into the new version. build-site.js stamps a real number in here
 //  for the website; 'dev' (your own copy) never checks.
 // =====================================================================
-const BUILD_ID = '20260912200231';
+const BUILD_ID = '20260912201806';
 function checkForUpdate(then = null, resume = null) {
   if (BUILD_ID === 'dev' || location.protocol === 'file:') { if (then) then(); return; }
   if (S.checking) return;
@@ -123,6 +131,12 @@ const rnd = Math.random;
 const rr = (a, b) => a + rnd() * (b - a);
 const ri = (a, b) => Math.floor(rr(a, b + 1));
 const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
+// how far point (px, py) is from the line segment a -> b (for node connections)
+function segDist(px, py, ax, ay, bx, by) {
+  const dx = bx - ax, dy = by - ay, l2 = dx * dx + dy * dy;
+  const t = l2 ? clamp(((px - ax) * dx + (py - ay) * dy) / l2, 0, 1) : 0;
+  return Math.hypot(px - ax - dx * t, py - ay - dy * t);
+}
 const lerp = (a, b, t) => a + (b - a) * t;
 
 // =====================================================================
@@ -742,6 +756,27 @@ const SFX = {
     o.start(t); o2.start(t); o.stop(end + 0.05); o2.stop(end + 0.05);
     for (let i = 0; i < 14; i++) burst(0.02, rr(0.2, 0.4), rr(2000, 8000), 3, true, rr(-1, 1), 0, rr(0, GRAB.tear));
   },
+  // HIT BY A NODE CONNECTION: an electric zap diving down + a thud
+  zapHurt() {
+    burst(0.12, 0.5, 3000, 0.8, true);
+    blip([900, 500, 260, 120], 0.03, 0.08, 'sawtooth');
+    thump(0.5, 160, 50, 0.18);
+  },
+  // A RIFT'S BITE: a small crunchy glitch
+  riftBite() { burst(0.08, 0.28, 900, 1.5, true); thump(0.25, 90, 40, 0.12); },
+  // THE CRACK DEATH: glass cracking all over, a deep boom, and the crash from
+  // your RANSOM clip (if it's loaded)
+  crackDeath() {
+    const ctx = AU.ctx; if (!ctx) return;
+    thump(1, 180, 25, 1.0);
+    burst(0.4, 0.5, 2000, 0.5, true);
+    for (let i = 0; i < 20; i++) { const f = rr(4000, 10000); burst(rr(0.004, 0.012), rr(0.5, 0.9), f, 5, true, rr(-1, 1), 0, rr(0, 0.5)); }
+    if (AU.kill) {
+      const s = ctx.createBufferSource(), gn = ctx.createGain(), t = ctx.currentTime;
+      s.buffer = AU.kill; gn.gain.setValueAtTime(0.9, t); gn.gain.setValueAtTime(0.9, t + 0.9); gn.gain.linearRampToValueAtTime(0, t + 1.3);
+      s.connect(distortion(1.6)).connect(gn).connect(AU.master); s.start(t, 1.29, 1.3);
+    }
+  },
   // RIP: you tear apart
   tear() { burst(0.5, 0.7, 1200, 0.4, true); burst(0.3, 0.5, 6000, 1, false, 0, 300); thump(0.9, 180, 30, 0.5); },
   // the cutscene build-up: a rumble, rising noise and a rising tone that all
@@ -1360,6 +1395,22 @@ function genWorld(n, seed, portal = 0) {
                     id: w.shards.length });
   }
   w.total = w.shards.length;
+  // NODES: clumps of 3-8, away from The Anchor, the Rifts and The Portal
+  w.nodes = []; w.links = [];
+  const clumps = Math.max(3, Math.round(2 + n / 5));
+  for (let c = 0; c < clumps; c++) {
+    let cx = 0, cy = 0;
+    for (let tries = 0; tries < 300; tries++) {
+      const a = R() * 6.283, d = 420 + Math.sqrt(R()) * (edgeRadiusAt(w.edge, a) - 600);
+      cx = Math.cos(a) * d; cy = Math.sin(a) * d;
+      if (w.blobs.some(b => Math.hypot(b.x - cx, b.y - cy) < b.r + 70)) continue;
+      if (w.portal && Math.hypot(w.portal.x - cx, w.portal.y - cy) < CFG.pureRange + 60) continue;
+      break;
+    }
+    for (let i = 0, size = 3 + Math.floor(R() * 6); i < size; i++)
+      w.nodes.push({ x: cx + (R() - 0.5) * 60, y: cy + (R() - 0.5) * 60, vx: 0, vy: 0,
+                     ang: R() * 6.283, turn: 0, clump: c, id: w.nodes.length, spin: R() * 6.283 });
+  }
   // break this area's seal into exactly one piece per shard
   w.seal = makeSeal(w.total, seed);
   w.shards.forEach((s, i) => { s.piece = w.seal.pieces[i]; });
@@ -1399,6 +1450,7 @@ function startArea(area, n) {
   cam.x = player.x; cam.y = player.y;
   particles = []; flyers = []; pops = [];
   S.mode = 'play'; S.intro = 3.2; S.boost = 1; S.msgT = 0; S.rift = 0; S.riftB = null;
+  S.hp = CFG.maxHp; S.hurtT = 0; S.riftTouch = 0; S.hitFlash = 0; S.deathCause = null;   // full health each area
   S.lastSec = Math.ceil(S.time); S.lastHalf = Math.ceil(S.time * 2); S.rewinding = false;
 }
 function newRun() { startArea(1, CFG.firstShards); }
@@ -1436,6 +1488,32 @@ function sealComplete() {
   world.anchorPulse = 1; S.shake = 7; S.boost = 1;
   burstParticles(0, 0, 160, 3.2);
 }
+// TAKING DAMAGE. cause = what hurt you ('node' or 'rift') — remembered so the
+// death menu can say what killed you. small = a Rift's little bite (it doesn't
+// use the "can't be hit again" cooldown, it has its own 2-second rhythm).
+function hurt(dmg, cause, small = false) {
+  if (S.mode !== 'play') return;
+  if (!small) { if (S.hurtT > 0) return; S.hurtT = CFG.hitCooldown; }
+  S.hp = Math.max(0, S.hp - dmg);
+  S.hitFlash = small ? 0.5 : 1; S.shake = Math.max(S.shake, small ? 1.5 : 5);
+  if (small) SFX.riftBite(); else SFX.zapHurt();
+  if (S.hp <= 0) crackDie(cause);
+}
+// DYING (by damage, or The Portal): the screen cracks from where you are,
+// then the death menu tells you what killed you
+const CRACK = { spread: 0.55, end: 1.35 };
+function crackDie(cause) {
+  S.mode = 'cracking'; S.crackT = 0; S.deathCause = cause; S.shatter = null; S.shake = 8;
+  SFX.crackDeath();
+}
+// what the death menu says for each way of dying
+const DEATH_TEXT = {
+  time:   ['REALITY COLLAPSED', 'TIME RAN OUT'],
+  node:   ['SHOCKED TO PIECES', 'KILLED BY A NODE CONNECTION'],
+  rift:   ['CONSUMED', 'KILLED BY A RIFT'],
+  portal: ['LOST IN THE PORTAL', 'DRAGGED INTO THE PORTAL'],
+};
+
 // the timer hit zero: the lightning catches you. (After GRAB.end, die()
 // starts the screen-crack jumpscare.)
 function grab() {
@@ -1443,7 +1521,7 @@ function grab() {
   SFX.grab();
 }
 function die() {
-  S.mode = 'dying'; S.dieT = 0; S.shake = 10;
+  S.mode = 'dying'; S.dieT = 0; S.shake = 10; S.deathCause = 'time';
   S.shatter = null;                               // the glass gets built fresh on the first jumpscare frame
   SFX.death();
 }
@@ -1478,7 +1556,7 @@ function burstParticles(x, y, n, speed = 1, cols = PCOLS) {
 // Instead we bend it with an exponential curve: barely anything at 1:00,
 // about 12% at 0:30, 36% at 0:15, then it rushes to 100% at the end.
 function lateRaw() {
-  if (S.mode === 'play' || S.mode === 'paused') return S.time < CFG.corruptAt ? 1 - S.time / CFG.corruptAt : 0;
+  if (S.mode === 'play' || S.mode === 'paused' || S.mode === 'cracking') return S.time < CFG.corruptAt ? 1 - S.time / CFG.corruptAt : 0;
   if (S.mode === 'grabbed' || S.mode === 'dying' || S.mode === 'dead') return 1;
   return 0;
 }
@@ -1517,6 +1595,7 @@ function update(dt) {
   S.pure += (pt - S.pure) * (1 - Math.exp(-dt * 2.5));
   S.shake = Math.max(0, S.shake - dt * 14);
   S.boost = Math.max(0, S.boost - dt * 1.6);
+  S.hitFlash = Math.max(0, (S.hitFlash || 0) - dt * 2.5);
   S.msgT -= dt; S.intro -= dt;
   const k = glitchK();
 
@@ -1549,6 +1628,7 @@ function update(dt) {
     if (before < CLEAR.done && S.clearT >= CLEAR.done) sealComplete();
     if (S.clearT > CLEAR.end) nextArea();
   }
+  else if (S.mode === 'cracking') { S.crackT += dt; if (S.crackT > CRACK.end) S.mode = 'dead'; }
   else if (S.mode === 'grabbed') {
     S.grabT += dt;
     // bits of you stream off your pieces, flowing out along the bolts
@@ -1612,16 +1692,48 @@ function updatePlay(dt, k) {
   if (keys.w || keys.arrowup) iy--;
   if (keys.s || keys.arrowdown) iy++;
   const il = Math.hypot(ix, iy) || 1;
-  const tvx = ix / il * CFG.playerSpeed, tvy = iy / il * CFG.playerSpeed;
+  const slow = 1 - S.pure * 0.65;                  // near The Portal you get slower and slower...
+  const tvx = ix / il * CFG.playerSpeed * slow, tvy = iy / il * CFG.playerSpeed * slow;
   const acc = 1 - Math.exp(-dt * 12);
   player.vx += (tvx - player.vx) * acc; player.vy += (tvy - player.vy) * acc;
   player.x += player.vx * dt; player.y += player.vy * dt;
+  // ...and it DRAGS you in: a pull toward its middle that gets much stronger
+  // up close (squared). Far out you can walk away; too close and it wins.
+  const P = world.portal;
+  if (P) {
+    const dx = P.x - player.x, dy = P.y - player.y, d = Math.hypot(dx, dy);
+    if (d < CFG.pureRange && d > 0) {
+      const pull = Math.pow(1 - d / CFG.pureRange, 2) * CFG.portalPull;
+      player.x += dx / d * pull * dt; player.y += dy / d * pull * dt;
+    }
+    if (d < 9) { crackDie('portal'); return; }
+  }
 
-  // --- bump into corruption masses (they're egg-shaped, so squash y) ---
+  // --- bump into Rifts (they're egg-shaped, so squash y). Standing right
+  //     against one hurts: 1 HP every 2 seconds ---
+  let touching = false;
   for (const b of world.blobs) {
     const dx = player.x - b.x, dy = (player.y - b.y) / 1.25, d = Math.hypot(dx, dy), min = b.r * 0.92 + 5;
     if (d < min && d > 0) { player.x = b.x + dx / d * min; player.y = b.y + dy / d * min * 1.25; }
+    if (d < min + 3) touching = true;
   }
+  if (touching) {
+    if (S.riftTouch <= 0) S.riftTouch = CFG.riftDamageEvery - 0.3;   // the first bite comes quickly
+    S.riftTouch += dt;
+    if (S.riftTouch >= CFG.riftDamageEvery) { S.riftTouch -= CFG.riftDamageEvery; hurt(CFG.riftDamage, 'rift', true); if (S.mode !== 'play') return; }
+  } else S.riftTouch = 0;
+
+  // --- Nodes drift around; walking into a node connection hurts ---
+  S.hurtT = Math.max(0, S.hurtT - dt);
+  updateNodes(dt);
+  let nearLink = 1e9, nearX = 0;
+  for (const [a, b, s] of world.links) {
+    const d = segDist(player.x, player.y, a.x, a.y, b.x, b.y);
+    if (d < nearLink) { nearLink = d; nearX = (a.x + b.x) / 2; }
+    if (d < 5 && s > 0.5) { hurt(CFG.nodeDamage, 'node'); if (S.mode !== 'play') return; }
+  }
+  if (nearLink < 70 && rnd() < (1 - nearLink / 70) * 9 * dt)          // it crackles as you get close
+    burst(0.02, 0.12 * (1 - nearLink / 70), rr(2500, 5000), 3, true, clamp((nearX - player.x) / 120, -1, 1));
   // --- edge of the world ---
   const pd = Math.hypot(player.x, player.y), lim = edgeRadiusAt(world.edge, Math.atan2(player.y, player.x)) - 8;
   if (pd > lim) { player.x *= lim / pd; player.y *= lim / pd; }
@@ -1646,7 +1758,7 @@ function updatePlay(dt, k) {
       SFX.pickup(clamp((s.x - cam.x) / 200, -1, 1));
       S.boost = Math.max(S.boost, 0.35);
       const left = world.shards.filter(q => q.state === 'free').length;
-      pops.push({ x: s.x, y: s.y - 14, life: 1.4, txt: left ? left + ' LEFT' : 'ALL FOUND - GO HOME' });
+      pops.push({ x: s.x, y: s.y - 14, life: 1.4, txt: left ? left + ' LEFT' : 'RETURN TO THE ANCHOR' });
     }
   }
   // carried shards orbit around you
@@ -1660,7 +1772,7 @@ function updatePlay(dt, k) {
   // --- the timer --- near the portal it's PURIFIED: the closer you are, the
   // slower it runs; at ~70% purity it STOPS, and right at the portal it slowly
   // runs BACKWARDS (never past the time the area started with)
-  const rate = 1 - S.pure * 1.4;                   // 1 = normal ... 0 = stopped ... -0.4 = rewinding
+  const rate = Math.max(0, 1 - S.pure * 1.4);      // 1 = normal ... 0 = stopped (it never gives time back)
   S.time = Math.min(S.timeMax, S.time - dt * rate);
   S.rewinding = rate < 0;
   const sec = Math.ceil(S.time);
@@ -2476,6 +2588,99 @@ function drawPortalInner(sx, sy, RX, RY, T, rim, P) {
   g.restore();
 }
 
+// =====================================================================
+//  NODES — they drift around in clumps. Any two Nodes close enough form a
+//  NODE CONNECTION: spiky red lightning between them. Walk into one = -8 HP.
+// =====================================================================
+function updateNodes(dt) {
+  const N = world.nodes; if (!N.length) return;
+  const mid = {};                                   // the middle of each clump
+  for (const nd of N) { const m = mid[nd.clump] || (mid[nd.clump] = { x: 0, y: 0, n: 0 }); m.x += nd.x; m.y += nd.y; m.n++; }
+  // SMOOTH wandering: it's not the direction that changes randomly, it's how
+  // hard it's TURNING — and even that changes slowly. So the paths curve gently.
+  // Each CLUMP has its own travel direction (so the whole group goes places)...
+  world.clumpDir = world.clumpDir || {};
+  for (const c in mid) {
+    const cd = world.clumpDir[c] || (world.clumpDir[c] = { ang: rnd() * 6.283, turn: 0 });
+    cd.turn = clamp(cd.turn + (rnd() - 0.5) * 1.6 * dt, -0.6, 0.6); cd.ang += cd.turn * dt;
+    const m = mid[c], mx = m.x / m.n, my = m.y / m.n, pd = Math.hypot(mx, my) || 1;
+    const er = edgeRadiusAt(world.edge, Math.atan2(my, mx));
+    // heading into the edge or The Anchor? steer the whole clump away
+    const out = pd > er - 220 ? -1 : pd < 380 ? 1 : 0;
+    if (out) { const want = Math.atan2(my * out, mx * out), diff = ((want - cd.ang + 9.425) % 6.283) - 3.1416; cd.ang += diff * 1.2 * dt; }
+  }
+  for (const nd of N) {
+    // ...and each Node wobbles around that with a little wander of its own
+    nd.turn = clamp(nd.turn + (rnd() - 0.5) * 3 * dt, -1, 1);
+    nd.ang += nd.turn * dt;
+    const cd = world.clumpDir[nd.clump];
+    let tx = Math.cos(cd.ang) * CFG.nodeSpeed + Math.cos(nd.ang) * CFG.nodeSpeed * 0.45;
+    let ty = Math.sin(cd.ang) * CFG.nodeSpeed + Math.sin(nd.ang) * CFG.nodeSpeed * 0.45;
+    const m = mid[nd.clump], mx = m.x / m.n - nd.x, my = m.y / m.n - nd.y, md = Math.hypot(mx, my);
+    if (md > 45) { tx += mx / md * 22; ty += my / md * 22; }                 // stay (loosely) with your clump
+    for (const o of N) {                                                     // don't sit on each other
+      if (o === nd) continue;
+      const dx = nd.x - o.x, dy = nd.y - o.y, d = Math.hypot(dx, dy);
+      if (d < 18 && d > 0) { tx += dx / d * 30; ty += dy / d * 30; }
+    }
+    for (const b of world.blobs) {                                           // steer around Rifts
+      const dx = nd.x - b.x, dy = nd.y - b.y, d = Math.hypot(dx, dy);
+      if (d < b.r * 1.4 + 20 && d > 0) { tx += dx / d * 45; ty += dy / d * 45; }
+    }
+    const pd = Math.hypot(nd.x, nd.y) || 1, er = edgeRadiusAt(world.edge, Math.atan2(nd.y, nd.x));
+    if (pd > er - 120) { tx -= nd.x / pd * 45; ty -= nd.y / pd * 45; }       // turn back from the edge
+    if (pd < 260) { tx += nd.x / pd * 45; ty += nd.y / pd * 45; }            // keep away from The Anchor
+    const e = 1 - Math.exp(-dt * 1.5);                                       // ease into it = smooth
+    nd.vx += (tx - nd.vx) * e; nd.vy += (ty - nd.vy) * e;
+    nd.x += nd.vx * dt; nd.y += nd.vy * dt;
+  }
+  // node connections: every pair closer than nodeLink. s = strength: it
+  // flickers weakly right at the limit and is solid when they're close
+  const links = [];
+  for (let i = 0; i < N.length; i++) for (let j = i + 1; j < N.length; j++) {
+    const d = Math.hypot(N[i].x - N[j].x, N[i].y - N[j].y);
+    if (d < CFG.nodeLink) links.push([N[i], N[j], clamp((CFG.nodeLink - d) / 15, 0, 1)]);
+  }
+  world.links = links;
+}
+
+function drawNodes(camX, camY) {
+  const T = S.t, fq = Math.floor(T * 15);
+  // NODE CONNECTIONS: spiky red lightning — a zig-zag whose teeth flip every strike
+  for (const [a, b, s] of world.links) {
+    if (s < 1 && rnd() > s) continue;                                        // weak ones flicker
+    const x0 = a.x - camX, y0 = a.y - camY, x1 = b.x - camX, y1 = b.y - camY;
+    if (Math.max(x0, x1) < -10 || Math.min(x0, x1) > W + 10 || Math.max(y0, y1) < -10 || Math.min(y0, y1) > H + 10) continue;
+    const len = Math.hypot(x1 - x0, y1 - y0) || 1, nx = -(y1 - y0) / len, ny = (x1 - x0) / len;
+    const n = Math.max(4, Math.round(len / 6)), pts = [[x0, y0]];
+    for (let i = 1; i < n; i++) {
+      const sp = (i % 2 ? 1 : -1) * (2 + hash2(a.id * 97 + b.id, i + fq * 13, 81) * 4);   // alternating sharp teeth
+      pts.push([lerp(x0, x1, i / n) + nx * sp, lerp(y0, y1, i / n) + ny * sp]);
+    }
+    pts.push([x1, y1]);
+    glowAt((x0 + x1) / 2, (y0 + y1) / 2, len * 0.55, len * 0.55, 0.18 * s);
+    for (const [w, col] of [[3, '#ff0000'], [1, '#fff']]) {
+      g.strokeStyle = col; g.lineWidth = w; g.beginPath();
+      pts.forEach(([px, py], i) => i ? g.lineTo(px, py) : g.moveTo(px, py)); g.stroke();
+    }
+  }
+  // the NODES: a small red core with spikes spinning around it
+  for (const nd of world.nodes) {
+    const x = nd.x - camX, y = nd.y - camY;
+    if (x < -20 || x > W + 20 || y < -20 || y > H + 20) continue;
+    glowAt(x, y, 18, 18, 0.6);
+    const sp = T * 2.5 + nd.spin, pulse = 0.85 + 0.15 * Math.sin(T * 6 + nd.spin);
+    g.strokeStyle = '#ff0000'; g.lineWidth = 1; g.beginPath();
+    for (let i = 0; i < 8; i++) {                                            // spikes spinning around it
+      const a = sp + i * 0.7854, r = (i % 2 ? 10 : 7) * pulse;
+      g.moveTo(x + Math.cos(a) * 3.5, y + Math.sin(a) * 3.5); g.lineTo(x + Math.cos(a) * r, y + Math.sin(a) * r);
+    }
+    g.stroke();
+    diamond(x, y, 5.5, '#000');                                              // a black rim so it stands out
+    diamond(x, y, 4.5, '#ff0000'); diamond(x, y, 2, '#fff');
+  }
+}
+
 // how calm a spot is because of the portal: 1 right next to it, 0 out of reach
 function portalCalm(x, y) {
   const P = world.portal;
@@ -2609,6 +2814,7 @@ function drawPlayer(camX, camY, k) {
   dotSquare(x, y, 10, S.t * 1.6, 20, 1, 3, Math.floor(S.t * 6));
   g.globalAlpha = 1;
   if (rnd() < 0.05 + k * 0.25) diamond(x + ri(-3, 3), y, 5, 'rgba(255,0,0,0.7)');   // red ghost
+  if (S.hurtT > 0 && Math.floor(S.t * 20) % 2) return;       // blinking right after a hit
   diamond(x, y, 5, '#fff');
   diamond(x, y, 2, '#000');
   diamond(x, y, 0.8 + beatK() * 1.2, '#ff0000');               // a red core, pulsing with The Anchor's heartbeat
@@ -2978,13 +3184,39 @@ function drawHUD(k, late) {
   text(str, W / 2 + jx, 8, 3, tcol, (0.12 + late * 0.8 + S.rift * 0.5) * calm, 'center');
   // a frame around the timer (corner brackets) + a bar showing how much time is left
   const fw = textWidth('00:00', 3) + 14, fx = Math.round(W / 2 - fw / 2) + jx, fc = purified ? pur : danger ? '#ff0000' : '#fff';
-  if (S.rewinding && Math.floor(S.t * 3) % 2) text('<<', fx - 16, 15, 1, pur, 0, 'left');   // rewinding!
+  // THE PORTAL'S LIGHTNING swarms the timer — more bolts the closer you are
+  if (S.pure > 0.2) {
+    const nb = Math.round(S.pure * 7), fq2 = Math.floor(S.t * 12), bolts = [];
+    const per = u => {                                          // a point on the timer's frame, u = 0..1 around it
+      const pw = fw, ph = 32, L = (pw + ph) * 2; let d = u * L;
+      if (d < pw) return [fx + d, 3]; d -= pw;
+      if (d < ph) return [fx + pw, 3 + d]; d -= ph;
+      if (d < pw) return [fx + pw - d, 3 + ph]; d -= pw;
+      return [fx, 3 + ph - d];
+    };
+    for (let i = 0; i < nb; i++) {
+      const u0 = hash2(i, fq2, 91), u1 = (u0 + 0.12 + hash2(i, fq2, 92) * 0.4) % 1;
+      const [x0, y0] = per(u0), [x1, y1] = per(u1), pts = [];
+      for (let s = 0; s <= 6; s++) {
+        const f = s / 6, wig = Math.sin(f * Math.PI) * 9;
+        pts.push([lerp(x0, x1, f) + (hash2(i * 7 + s, fq2, 93) - 0.5) * wig, lerp(y0, y1, f) + (hash2(i * 7 + s, fq2, 94) - 0.5) * wig]);
+      }
+      bolts.push([pts, 700 + i, true]);
+    }
+    glowAt(W / 2, 19, fw * 0.8, 24, 0.4 * S.pure, GLOW_BLUE);
+    drawBolts(bolts, 0, 0, BLUE_BOLTS);
+  }
   bracket(fx, 3, fw, 32, 5, fc);
   g.fillStyle = '#262626'; g.fillRect(fx + 4, 31, fw - 8, 2);
   g.fillStyle = fc; g.fillRect(fx + 4, 31, Math.round((fw - 8) * clamp(S.time / S.timeMax, 0, 1)), 2);
 
   diamond(10, 11, 2.5, '#ff0000');
   text('AREA ' + S.area, 16, 8, 1, '#8c8c96', (0.05 + late * 0.3) * calm);
+  // HEALTH, under the area number: a bar + the number (flashes white when hit)
+  const hpw = 58, hpx = 10, hpy = 19, hpc = S.hitFlash > 0.4 && Math.floor(S.t * 20) % 2 ? '#fff' : '#ff0000';
+  g.fillStyle = '#262626'; g.fillRect(hpx, hpy, hpw, 4);
+  g.fillStyle = hpc; g.fillRect(hpx, hpy, Math.round(hpw * clamp(S.hp / CFG.maxHp, 0, 1)), 4);
+  text(Math.ceil(S.hp) + ' HP', hpx + hpw + 5, hpy - 1, 1, S.hp <= 25 ? '#ff0000' : '#8c8c96', 0.04 * calm);
   // shard counter with a mini shard icon
   const cnt = world.delivered + '/' + world.total;
   text(cnt, W - 8, 8, 2, '#fff', (0.05 + late * 0.3) * calm, 'right');
@@ -3043,9 +3275,9 @@ const DEATH = {
 // Build the broken glass. A spiderweb is two kinds of crack: straight-ish
 // lines shooting OUT from the hit (radial), and rings going AROUND it.
 // Where they cross, they cut the screen into pieces ("cells").
-function buildShatter() {
+// (ix, iy) = where the hit lands; fall0..fall1 = when loose pieces fall out
+function buildShatter(ix = W / 2 + rr(-24, 24), iy = H / 2 + rr(-14, 14), fall0 = 0.72, fall1 = DEATH.still) {
   const fr = makeCanvas(W, H); fr.getContext('2d').drawImage(cv, 0, 0);   // freeze the screen as it was
-  const ix = W / 2 + rr(-24, 24), iy = H / 2 + rr(-14, 14);                // where the hit landed
   const N = ri(11, 14), rings = [0, 7, 18, 36, 64, 105, 165, 250, 380, 600];
   const rad = [], a0 = rnd() * 6.283;
   for (let i = 0; i < N; i++) {                       // each radial crack = a wobbly line of points
@@ -3064,7 +3296,7 @@ function buildShatter() {
     cells.push({
       poly, cx, cy, rin: rings[j],
       ox: rr(-2, 2), oy: rr(-2, 2),                    // cracked pieces sit a bit crooked
-      fall: j >= 3 && rnd() < 0.45 ? rr(0.72, DEATH.still) : 99,   // some fall out in the build-up
+      fall: j >= 3 && rnd() < 0.45 ? rr(fall0, fall1) : 99,        // some fall out
       vx: rr(-25, 25), spin: rr(-1.5, 1.5), edge: rnd() < 0.35,    // some catch the light
     });
   }
@@ -3266,6 +3498,42 @@ function drawClear() {
   g.globalAlpha = 1;
 }
 
+// OUCH: a solid red frame around the screen + glitch bits along the edges
+// (solid pieces, not a see-through red wash)
+function drawHitFlash() {
+  const f = S.hitFlash, t = Math.ceil(f * 5);
+  g.fillStyle = '#ff0000';
+  g.fillRect(0, 0, W, t); g.fillRect(0, H - t, W, t); g.fillRect(0, 0, t, H); g.fillRect(W - t, 0, t, H);
+  for (let i = 0, n = Math.round(f * 30); i < n; i++) {
+    const side = i % 4, u = rnd();
+    glitchPiece(side === 0 ? u * W : side === 1 ? W - ri(4, 20) : side === 2 ? u * W : ri(0, 16),
+                side === 0 ? ri(0, 14) : side === 1 ? u * H : side === 2 ? H - ri(4, 16) : u * H);
+  }
+}
+
+// THE CRACK DEATH (damage or The Portal): the screen freezes and cracks from
+// where you are, the cracks race outward, pieces start falling out... then
+// the death menu. (t = seconds since you died)
+function drawCrackDeath(t, px, py) {
+  if (!S.shatter) S.shatter = buildShatter(px, py, 0.55, 1.2);
+  const SH = S.shatter, shake = t < 0.15 ? 6 : Math.max(0, 2 - t * 2);
+  const L = 30 + Math.pow(Math.min(1, t / CRACK.spread), 0.7) * 640;        // how far the cracks have spread
+  g.fillStyle = '#000'; g.fillRect(0, 0, W, H);
+  g.save(); g.translate(rr(-shake, shake), rr(-shake, shake));
+  g.drawImage(SH.fr, 0, 0);
+  for (const c of SH.cells) {
+    if (c.rin >= L) continue;                                                // not cracked yet
+    let ox = c.ox, oy = c.oy, rot = 0;
+    if (t > c.fall) { const f = t - c.fall; ox += c.vx * f; oy += 320 * f * f; rot = c.spin * f * 3; }
+    g.fillStyle = '#000'; cellPath(c); g.fill();                             // the gap where it was
+    if (c.cy + oy - 40 > H * 1.5) continue;
+    drawCell(SH, c, ox, oy, rot, 1, false);
+  }
+  drawCracks(SH, L);
+  g.restore();
+  if (t < 0.05) { g.fillStyle = '#fff'; g.fillRect(0, 0, W, H); }           // the moment it breaks
+}
+
 function drawDead() {
   g.fillStyle = '#000'; g.fillRect(0, 0, W, H);                 // solid black — no muddy dimming
   // torn bands of solid glitch along the top and bottom edges
@@ -3277,10 +3545,12 @@ function drawDead() {
       wallFill(Math.round(x0), y, Math.round(len), 2, 9);
     }
   }
-  glowAt(W / 2, H / 2 - 40, 190, 34, 0.5);
-  text('REALITY COLLAPSED', W / 2, H / 2 - 50, 3, '#ff0000', 0.5, 'center');
-  text('AREA ' + S.area + '    ' + world.delivered + '/' + world.total + ' SHARDS DELIVERED', W / 2, H / 2 - 12, 1, '#fff', 0.1, 'center');
-  text('[R] TRY AGAIN      [ENTER] MENU', W / 2, H / 2 + 20, 1, '#8c8c96', 0.05, 'center');
+  const [head, cause] = DEATH_TEXT[S.deathCause] || DEATH_TEXT.time;
+  glowAt(W / 2, H / 2 - 44, 190, 34, 0.5);
+  text(head, W / 2, H / 2 - 56, 3, '#ff0000', 0.5, 'center');
+  text(cause, W / 2, H / 2 - 24, 1, '#fff', 0.15, 'center');                 // what killed you
+  text('AREA ' + S.area + '    ' + world.delivered + '/' + world.total + ' SHARDS DELIVERED', W / 2, H / 2 - 6, 1, '#8c8c96', 0.05, 'center');
+  text('[R] TRY AGAIN      [ENTER] MENU', W / 2, H / 2 + 22, 1, '#8c8c96', 0.05, 'center');
 }
 
 // =====================================================================
@@ -3294,6 +3564,7 @@ function render() {
   drawBackground(camX, camY, k, late);
   drawAnchor(camX, camY, k);
   drawBlobs(camX, camY, k, late);
+  drawNodes(camX, camY);
   drawPortal(camX, camY, 'outer');
   for (const s of world.shards) if (s.state === 'free') {
     const x = s.x - camX, y = s.y - camY;
@@ -3302,7 +3573,7 @@ function render() {
   for (const f of flyers) drawShard(f.s, f.x - camX, f.y - camY, ART, k);
   if (player && S.mode !== 'dead') {
     for (const s of player.carried) drawShard(s, s.cx - camX, s.cy - camY, ART, k, 0.6);
-    if (S.mode === 'play' || S.mode === 'paused' || S.mode === 'clear') drawPlayer(camX, camY, k);
+    if (S.mode === 'play' || S.mode === 'paused' || S.mode === 'clear' || S.mode === 'cracking') drawPlayer(camX, camY, k);
     else if (S.mode === 'grabbed') drawGrabbedPlayer(Math.round(player.x - camX), Math.round(player.y - camY), 'under');
   }
   for (const p of particles) {
@@ -3334,6 +3605,8 @@ function render() {
   if (S.mode === 'grabbed') drawGrabbedPlayer(Math.round(player.x - camX), Math.round(player.y - camY), 'over');
   if (player && (S.mode === 'grabbed' || (S.mode === 'dying' && !S.shatter))) grabZoom(player.x - camX, player.y - camY);
   if (S.mode === 'dying') drawJumpscare(S.dieT);
+  if (S.mode === 'cracking') drawCrackDeath(S.crackT, player.x - camX, player.y - camY);
+  if (S.hitFlash > 0 && S.mode === 'play') drawHitFlash();
 
   if (S.mode === 'play' || S.mode === 'paused' || S.mode === 'grabbed') drawHUD(k, late);
   if (S.mode === 'paused') {
