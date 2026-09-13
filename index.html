@@ -73,7 +73,7 @@ const CFG = {
 //  reloads into the new version. build-site.js stamps a real number in here
 //  for the website; 'dev' (your own copy) never checks.
 // =====================================================================
-const BUILD_ID = '20260913101738';
+const BUILD_ID = '20260913114650';
 function checkForUpdate(then = null, resume = null) {
   if (BUILD_ID === 'dev' || location.protocol === 'file:') { if (then) then(); return; }
   if (S.checking) return;
@@ -594,22 +594,32 @@ function audioInit() {
   AU.echo.connect(echoLP).connect(fb).connect(AU.echo);
   echoLP.connect(AU.music);
 
-  // THE PORTAL'S HUM: four soft sine tones (a dreamy E major 7 chord),
-  // slowly swelling in and out. Nothing crushed or glitchy — it's the
-  // only calm sound in the game.
+  // REVERB: makes a sound ring out like it's in a GIGANTIC space. It works
+  // by "convolution": every sound gets smeared out along a recording of a
+  // space's echo (an "impulse response"). We don't have a recording of
+  // space... so we make one: random noise that slowly fades away over 5 s.
+  AU.verb = makeVerb(ctx, 5, 2.6); AU.verb.connect(AU.master);          // for the portal ending + dimension sounds
+  AU.pverb = makeVerb(ctx, 4, 2.4);                                      // the portal song's own (connected below)
+
+  // THE PORTAL'S HUM: a deep, dark chord (D minor 9) far down low, slowly
+  // swelling in and out, ringing in the big reverb. Nothing crushed or
+  // glitchy — calm, but huge and a little scary, not cute.
   AU.portal = ctx.createGain(); AU.portal.gain.value = 0;
   AU.portalPan = ctx.createStereoPanner();
   const swell = ctx.createGain(); swell.gain.value = 0.7;
-  const sw = ctx.createOscillator(); sw.frequency.value = 0.25;
+  const sw = ctx.createOscillator(); sw.frequency.value = 0.12;
   const swAmt = ctx.createGain(); swAmt.gain.value = 0.3; sw.connect(swAmt).connect(swell.gain); sw.start();
-  for (const [f, v] of [[164.8, 0.5], [329.6, 0.35], [493.9, 0.25], [622.3, 0.18], [987.8, 0.1]]) {
-    for (const det of [-4, 4]) {
+  const hlp = ctx.createBiquadFilter(); hlp.type = 'lowpass'; hlp.frequency.value = 900;
+  for (const [f, v, type] of [[73.42, 0.6, 'sine'], [110, 0.4, 'sine'], [146.8, 0.3, 'triangle'], [174.6, 0.2, 'triangle'], [329.6, 0.07, 'sine']]) {
+    for (const det of [-5, 5]) {
       const o = ctx.createOscillator(), og = ctx.createGain();
-      o.frequency.value = f; o.detune.value = det; og.gain.value = v;
-      o.connect(og).connect(swell); o.start();
+      o.type = type; o.frequency.value = f; o.detune.value = det; og.gain.value = v;
+      o.connect(og).connect(hlp); o.start();
     }
   }
+  hlp.connect(swell);
   swell.connect(AU.portal).connect(AU.portalPan).connect(AU.master);
+  const hv = ctx.createGain(); hv.gain.value = 0.5; AU.portal.connect(hv).connect(AU.verb);
 
   // THE PORTAL SONG's own volume knob (turned up by purity) + its own long,
   // soft echo, so its notes ring out like they're in a huge calm space
@@ -618,6 +628,7 @@ function audioInit() {
   const pfb = ctx.createGain(); pfb.gain.value = 0.5;
   const plp = ctx.createBiquadFilter(); plp.type = 'lowpass'; plp.frequency.value = 2600;
   AU.pecho.connect(plp).connect(pfb).connect(AU.pecho); plp.connect(AU.pmus);
+  AU.pverb.connect(AU.pmus);                                             // (so the reverb fades with the song)
 
   // unpack the kill sound: base64 text -> bytes -> audio the game can play
   try {
@@ -655,6 +666,37 @@ function startClipScream(b) {
   s.connect(hp).connect(gn).connect(distortion(1.8)).connect(AU.scrStut); s.start();
   AU.scrClip = s;
   AU.scrSynth.gain.value = 0;                                      // switch off the homemade scream
+}
+// a made-up "impulse response" for the reverb: stereo noise fading away
+// (pow = how fast it fades — bigger = the echo dies sooner)
+function makeVerb(ctx, secs, pow) {
+  const len = Math.round(ctx.sampleRate * secs), b = ctx.createBuffer(2, len, ctx.sampleRate);
+  for (let c = 0; c < 2; c++) { const d = b.getChannelData(c); for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, pow); }
+  const cv = ctx.createConvolver(); cv.buffer = b; return cv;
+}
+// a sound that rings like a bell or struck glass: a few sine "partials" at
+// NON-whole-number multiples (2.76, 5.4...) — that's what makes it sound like
+// metal/glass instead of a plain beep. Mostly sent into the big reverb.
+function bell(f, vol, dur, pan = 0, delay = 0, dry = 0.35) {
+  const ctx = AU.ctx; if (!ctx) return;
+  const t = ctx.currentTime + delay, p = ctx.createStereoPanner(); p.pan.value = pan;
+  const dg = ctx.createGain(); dg.gain.value = dry; p.connect(dg).connect(AU.master); p.connect(AU.verb);
+  [[1, 1], [2.01, 0.45], [2.76, 0.3], [5.4, 0.12]].forEach(([m, v], i) => {
+    const o = ctx.createOscillator(), gn = ctx.createGain(), d = dur / (1 + i * 0.6);
+    o.frequency.value = f * m;
+    gn.gain.setValueAtTime(0, t); gn.gain.linearRampToValueAtTime(vol * v, t + 0.01); gn.gain.exponentialRampToValueAtTime(0.0005, t + d);
+    o.connect(gn).connect(p); o.start(t); o.stop(t + d + 0.05);
+  });
+}
+// a noise source with its own filter + volume envelope (points = [[time, volume], ...])
+function noiseEnv(t, type, f0, f1, dur, pts, q = 0.7, dest = null) {
+  const ctx = AU.ctx, s = ctx.createBufferSource(); s.buffer = AU.noise; s.loop = true;
+  const f = ctx.createBiquadFilter(); f.type = type; f.Q.value = q; f.frequency.setValueAtTime(f0, t);
+  if (f1 !== f0) f.frequency.exponentialRampToValueAtTime(f1, t + dur);
+  const gn = ctx.createGain(); gn.gain.setValueAtTime(0, t);
+  for (const [pt, v] of pts) gn.gain.linearRampToValueAtTime(v, t + pt);
+  s.connect(f).connect(gn).connect(dest || AU.master); s.start(t); s.stop(t + dur + 0.1);
+  return gn;
 }
 // a distortion "curve": squashes loud parts flat, which makes sound rough
 function distortion(amount) {
@@ -837,20 +879,41 @@ const SFX = {
   // THE PORTAL TAKES YOU: a shimmering chord that rises as the screen warps,
   // a deep swell, and when everything has shrunk into the dot: one soft
   // bright tone that hangs there... forever
+  // ENTERING THE PORTAL:
+  //  1) the door opens: a deep sub-bass DROP and air rushing in
+  //  2) a vast dark chord (like a choir of machines) that slowly RISES a
+  //     fifth and opens up (a filter sweeping from dull to bright)
+  //  3) a wind that rises with it, louder and higher
+  //  4) slow, huge heartbeat booms — closer and closer together
+  //  5) the moment it takes you: one massive soft boom
+  //  then one pure tone hangs around the dot... forever
   ascend() {
     const ctx = AU.ctx; if (!ctx) return;
-    const t = ctx.currentTime;
-    for (const [f, v] of [[164.8, 0.05], [246.9, 0.04], [329.6, 0.035], [493.9, 0.03], [659.3, 0.02], [987.8, 0.012]]) {
-      const o = ctx.createOscillator(), gn = ctx.createGain();
-      o.type = 'sine'; o.frequency.setValueAtTime(f, t); o.frequency.exponentialRampToValueAtTime(f * 2, t + WARP.zoom);
-      gn.gain.setValueAtTime(0, t); gn.gain.linearRampToValueAtTime(v, t + 6); gn.gain.setValueAtTime(v, t + WARP.whole);
-      gn.gain.exponentialRampToValueAtTime(0.0005, t + WARP.zoom);
-      o.connect(gn).connect(AU.master); o.start(t); o.stop(t + WARP.zoom + 0.1);
+    const t = ctx.currentTime, W1 = WARP.whole, Z = WARP.zoom;
+    const vs = ctx.createGain(); vs.gain.value = 0.7; vs.connect(AU.verb);      // (a send into the big reverb)
+    // 1)
+    const sub = ctx.createOscillator(), sg = ctx.createGain();
+    sub.frequency.setValueAtTime(72, t); sub.frequency.exponentialRampToValueAtTime(26, t + 3);
+    sg.gain.setValueAtTime(0.0001, t); sg.gain.exponentialRampToValueAtTime(0.6, t + 0.06); sg.gain.exponentialRampToValueAtTime(0.001, t + 3.4);
+    sub.connect(sg).connect(AU.master); sub.start(t); sub.stop(t + 3.5);
+    noiseEnv(t, 'lowpass', 250, 1400, 3.5, [[0.3, 0.22], [3.5, 0]], 0.7, vs);
+    // 2)
+    const lp = ctx.createBiquadFilter(), cg = ctx.createGain();
+    lp.type = 'lowpass'; lp.Q.value = 2.5; lp.frequency.setValueAtTime(220, t); lp.frequency.exponentialRampToValueAtTime(3200, t + W1);
+    cg.gain.setValueAtTime(0, t); cg.gain.linearRampToValueAtTime(0.2, t + 5); cg.gain.setValueAtTime(0.2, t + W1); cg.gain.exponentialRampToValueAtTime(0.0005, t + Z);
+    lp.connect(cg); cg.connect(AU.master); cg.connect(vs);
+    for (const n of [38, 45, 50, 53, 57, 64]) for (const det of [-9, 9]) {     // D2 A2 D3 F3 A3 E4 = D minor 9
+      const o = ctx.createOscillator(), og = ctx.createGain();
+      o.type = 'sawtooth'; o.detune.value = det; o.frequency.setValueAtTime(NOTE(n), t); o.frequency.exponentialRampToValueAtTime(NOTE(n + 7), t + W1);
+      og.gain.value = 0.05; o.connect(og).connect(lp); o.start(t); o.stop(t + Z + 0.1);
     }
-    burst(WARP.zoom - WARP.whole, 0.12, 200, 1, false, 0, 4000, WARP.whole - 1);   // a rushing swell as it shrinks
-    thump(0.5, 80, 30, 3, WARP.whole);                                     // everything falls away
+    // 3)
+    noiseEnv(t, 'bandpass', 180, 5000, W1, [[W1 * 0.6, 0.06], [W1, 0.2], [W1 + 0.4, 0]], 1.2, vs);
+    // 4) + 5)
+    for (const d of [0.05, 5, 9, 12, 14.4, 16, 17.1]) thump(0.3 + d / W1 * 0.4, 95, 30, 1.4, d);
+    thump(0.95, 70, 20, 4, W1);
     AU.dotTone = [];
-    for (const f of [1318.5, 1975.5]) {                                    // the tone that hangs around the dot
+    for (const f of [659.3, 987.8]) {                                      // the tone that hangs around the dot
       const o = ctx.createOscillator(), gn = ctx.createGain();
       o.type = 'sine'; o.frequency.value = f;
       gn.gain.setValueAtTime(0, t + WARP.zoom - 0.3); gn.gain.linearRampToValueAtTime(0.012, t + WARP.zoom + 2);
@@ -874,28 +937,111 @@ const SFX = {
     thump(0.9, 70, 25, 3, d);                                              // BOOM (soft and deep)
     for (const f of [1318.5, 1661.2, 1975.5, 2637]) blip([f], 1.4, 0.02, 'sine', rr(-0.6, 0.6), d);   // shimmer
   },
-  // THE STAR DIMENSION: a calm, glowing chord that slowly breathes, forever
-  // (the twinkly pings come from updateStars)
+  // THE STAR DIMENSION: not cute — VAST. A deep drone (D and A far down, a
+  // dark minor 9th on top) through a filter that very slowly opens and
+  // closes, plus a cosmic wind. Everything goes through AU.dim so the crack
+  // at the end can fade it all away.
   dimension() {
     const ctx = AU.ctx; if (!ctx) return;
-    const t = ctx.currentTime;
-    for (const [f, v, lfo] of [[82.4, 0.05, 0.05], [123.5, 0.035, 0.07], [207.7, 0.025, 0.09], [246.9, 0.02, 0.06], [311.1, 0.016, 0.11], [415.3, 0.01, 0.08]]) {
-      const o = ctx.createOscillator(), gn = ctx.createGain(), l = ctx.createOscillator(), lg = ctx.createGain(), p = ctx.createStereoPanner();
-      o.type = 'triangle'; o.frequency.value = f; o.detune.value = rr(-6, 6);
-      gn.gain.setValueAtTime(0, t); gn.gain.linearRampToValueAtTime(v, t + 4);
-      l.frequency.value = lfo; lg.gain.value = v * 0.6; l.connect(lg).connect(gn.gain);    // slow breathing (an LFO wobbles the volume)
-      p.pan.value = rr(-0.5, 0.5);
-      o.connect(gn).connect(p).connect(AU.master); o.start(t); l.start(t);   // (never stopped)
-    }
+    const t = ctx.currentTime, out = ctx.createGain();
+    out.gain.setValueAtTime(0, t); out.gain.linearRampToValueAtTime(1, t + 6); out.connect(AU.master);
+    const vs = ctx.createGain(); vs.gain.value = 0.8; out.connect(vs).connect(AU.verb);
+    AU.dim = out;
+    const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.Q.value = 3; lp.frequency.value = 520;
+    const l = ctx.createOscillator(), lg = ctx.createGain(); l.frequency.value = 0.03; lg.gain.value = 330; l.connect(lg).connect(lp.frequency); l.start(t);   // (the slow filter "breath")
+    lp.connect(out);
+    for (const [f, v, type] of [[73.42, 0.1, 'sine'], [55, 0.07, 'sine'], [110, 0.03, 'sawtooth'], [146.8, 0.024, 'sawtooth'], [174.6, 0.018, 'sawtooth'], [220, 0.014, 'sawtooth'], [329.6, 0.009, 'sawtooth']])
+      for (const det of [-6, 6]) {
+        const o = ctx.createOscillator(), og = ctx.createGain();
+        o.type = type; o.frequency.value = f; o.detune.value = det + rr(-2, 2); og.gain.value = v / 2;
+        o.connect(og).connect(lp); o.start(t);                              // (never stopped — only faded by AU.dim)
+      }
+    // cosmic wind: noise through a narrow filter whose pitch slowly drifts
+    const n = ctx.createBufferSource(); n.buffer = AU.noise; n.loop = true;
+    const bp = ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.Q.value = 0.9; bp.frequency.value = 700;
+    const l2 = ctx.createOscillator(), l2g = ctx.createGain(); l2.frequency.value = 0.05; l2g.gain.value = 420; l2.connect(l2g).connect(bp.frequency); l2.start(t);
+    const ng = ctx.createGain(); ng.gain.value = 0.035;
+    n.connect(bp).connect(ng).connect(out); n.start(t);
   },
-  // one soft, far-away star "ping"
+  // one deep, far-away chime (low glass, in the reverb) — every few seconds
   starPing() {
+    const f = [146.8, 174.6, 220, 261.6, 293.7, 349.2][ri(0, 5)] * (rnd() < 0.3 ? 2 : 1);
+    bell(f, rr(0.012, 0.022), 5, rr(-0.8, 0.8), 0, 0.15);
+  },
+  // A BRIGHT DOT appears: a soft, rising glassy shimmer
+  dotAppear() { bell(587.3, 0.012, 2.5, rr(-0.5, 0.5), 0, 0.2); bell(880, 0.008, 2, 0, 0.08, 0.2); },
+  // YOU TOUCHED IT: a deep soft "whomp" + a glass bell that gets higher
+  // with every dot you find (p = 0..1 how far along you are) + a rush of air
+  dotTouch(p) {
     const ctx = AU.ctx; if (!ctx) return;
-    const t = ctx.currentTime, f = [1244.5, 1661.2, 1864.7, 2489, 2793.8, 3322.4][ri(0, 5)];
-    const o = ctx.createOscillator(), gn = ctx.createGain(), p = ctx.createStereoPanner();
-    o.type = 'sine'; o.frequency.value = f; p.pan.value = rr(-0.9, 0.9);
-    gn.gain.setValueAtTime(0, t); gn.gain.linearRampToValueAtTime(rr(0.008, 0.02), t + 0.02); gn.gain.exponentialRampToValueAtTime(0.0005, t + 2.5);
-    o.connect(gn).connect(p).connect(AU.master); o.start(t); o.stop(t + 2.6);
+    thump(0.35, 110, 38, 0.7);
+    bell(146.8 * Math.pow(2, p * 1.25), 0.06, 5, 0, 0, 0.45);
+    bell(220 * Math.pow(2, p * 1.25), 0.025, 4, 0, 0.04, 0.3);
+    noiseEnv(ctx.currentTime, 'bandpass', 2200, 8000, 0.6, [[0.05, 0.08], [0.6, 0]], 1, AU.verb);
+  },
+  // THE RIFT OF CRACKED REALITY appears: electric crackling, a deep swell, a dark bell
+  riftAppear() {
+    const ctx = AU.ctx; if (!ctx) return;
+    for (let i = 0; i < 16; i++) burst(rr(0.01, 0.04), rr(0.08, 0.2), rr(2500, 9000), 4, false, rr(-0.6, 0.6), 0, rr(0, 1.2));
+    thump(0.5, 60, 28, 2.2);
+    bell(73.42, 0.08, 7, 0, 0.1, 0.5);
+    noiseEnv(ctx.currentTime, 'lowpass', 150, 900, 2, [[0.8, 0.12], [2, 0]], 1, AU.verb);
+  },
+  // the Rift's HUM (a low electric buzz) — v = 0..1 how close you are
+  riftHumSet(v, pan = 0) {
+    const ctx = AU.ctx; if (!ctx) return;
+    if (!AU.riftHum) {
+      if (v <= 0) return;
+      const gn = ctx.createGain(); gn.gain.value = 0;
+      const p = ctx.createStereoPanner(), lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 500;
+      for (const f of [55, 55.6, 110.3]) { const o = ctx.createOscillator(); o.type = 'sawtooth'; o.frequency.value = f; o.connect(lp); o.start(); }
+      lp.connect(gn).connect(p).connect(AU.master);
+      AU.riftHum = { gn, p };
+    }
+    AU.riftHum.gn.gain.setTargetAtTime(v * v * 0.12, ctx.currentTime, 0.15);
+    AU.riftHum.p.pan.setTargetAtTime(pan, ctx.currentTime, 0.15);
+  },
+  // HOLDING E: a tone that rises and brightens as it charges (k = 0..1)
+  riftChargeSet(k) {
+    const ctx = AU.ctx; if (!ctx) return;
+    if (!AU.riftCharge) {
+      if (k <= 0) return;
+      const o = ctx.createOscillator(), o2 = ctx.createOscillator(), lp = ctx.createBiquadFilter(), gn = ctx.createGain();
+      o.type = 'sawtooth'; o2.type = 'sawtooth'; o2.detune.value = 12; lp.type = 'lowpass'; lp.Q.value = 4; gn.gain.value = 0;
+      o.connect(lp); o2.connect(lp); lp.connect(gn); gn.connect(AU.master); gn.connect(AU.verb); o.start(); o2.start();
+      AU.riftCharge = { o, o2, lp, gn };
+    }
+    const c = AU.riftCharge, t = ctx.currentTime, f = 70 * Math.pow(2, k * 2.6);
+    c.o.frequency.setTargetAtTime(f, t, 0.05); c.o2.frequency.setTargetAtTime(f * 1.5, t, 0.05);
+    c.lp.frequency.setTargetAtTime(250 + k * k * 5000, t, 0.05); c.gn.gain.setTargetAtTime(k > 0 ? 0.03 + k * 0.1 : 0, t, 0.06);
+  },
+  // IT EXPLODES — beautifully: a huge soft boom, a wave of noise that
+  // darkens as it fades, crackling, and glass bells ringing out after
+  riftBoom() {
+    const ctx = AU.ctx; if (!ctx) return;
+    const t = ctx.currentTime;
+    SFX.riftChargeSet(0); SFX.riftHumSet(0);
+    thump(1, 130, 22, 2.8);
+    const vs = ctx.createGain(); vs.gain.value = 0.9; vs.connect(AU.verb);
+    const g1 = noiseEnv(t, 'lowpass', 9000, 250, 3, [[0.02, 0.6], [0.5, 0.35], [3, 0]], 0.7); g1.connect(vs);
+    for (let i = 0; i < 22; i++) burst(rr(0.01, 0.05), rr(0.1, 0.25), rr(2000, 9000), 4, false, rr(-1, 1), 0, rr(0, 1.6));
+    for (const [f, d] of [[880, 0.15], [1174.7, 0.3], [1318.5, 0.5], [1760, 0.7], [587.3, 0.9]]) bell(f, 0.03, 6, rr(-0.7, 0.7), d, 0.2);
+    for (const f of [73.42, 110, 146.8]) bell(f, 0.05, 8, 0, 0.05, 0.4);
+  },
+  // THE CRACK OPENS and swallows everything (dur seconds): a deep rumble and
+  // a sucking wind that both grow and grow... the dimension's sound fades
+  // away... and at the very end: SILENCE
+  crackOpen(dur) {
+    const ctx = AU.ctx; if (!ctx) return;
+    const t = ctx.currentTime;
+    noiseEnv(t, 'lowpass', 110, 500, dur, [[dur * 0.5, 0.18], [dur - 0.05, 0.55], [dur, 0]], 1);
+    noiseEnv(t, 'bandpass', 3500, 140, dur, [[dur * 0.4, 0.04], [dur - 0.05, 0.28], [dur, 0]], 1.5);
+    const o = ctx.createOscillator(), gn = ctx.createGain();
+    o.frequency.setValueAtTime(34, t); o.frequency.exponentialRampToValueAtTime(22, t + dur);
+    gn.gain.setValueAtTime(0, t); gn.gain.linearRampToValueAtTime(0.5, t + dur - 0.05); gn.gain.linearRampToValueAtTime(0, t + dur);
+    o.connect(gn).connect(AU.master); o.start(t); o.stop(t + dur + 0.1);
+    if (AU.dim) { AU.dim.gain.cancelScheduledValues(t); AU.dim.gain.setValueAtTime(AU.dim.gain.value, t); AU.dim.gain.linearRampToValueAtTime(0, t + dur * 0.85); }
+    thump(0.6, 60, 20, 3, dur);                                  // the very last sound, as it all goes black
   },
   // DASH: a quick airy whoosh + a little zip
   dash() {
@@ -1210,6 +1356,7 @@ function tone(freq, t, dur, o = {}) {
   if (o.cutoff) { const f = ctx.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = o.cutoff; f.Q.value = o.q || 1; osc.connect(f); node = f; }
   node.connect(gn).connect(o.bus || AU.music);            // (o.bus = send it somewhere else)
   if (o.echo) { const e = ctx.createGain(); e.gain.value = o.echo; gn.connect(e).connect(o.echoBus || AU.echo); }
+  if (o.verb) { const v = ctx.createGain(); v.gain.value = o.verb; gn.connect(v).connect(o.verbBus || AU.verb); }   // (into a reverb)
   osc.start(t); osc.stop(t + dur + 0.05);
 }
 
@@ -1242,24 +1389,26 @@ function beatK() {
   return Math.max(lub, dub);
 }
 
-// THE PORTAL SONG — the opposite of everything else in the game: clean,
-// slow, warm and bright. Four dreamy chords (Emaj7, F#/E, C#m7, Amaj7),
-// soft pads, a deep bass note and a gentle music-box melody on top.
-const PORTAL_CHORDS = [[52, 56, 59, 63], [54, 58, 61, 64], [49, 52, 56, 59], [45, 49, 52, 56]];
+// THE PORTAL SONG — still calm (the only calm place in the game), but not
+// cute any more: slow, dark and HUGE, like standing at the edge of something
+// ancient. Minor chords (Dm9, Bbmaj7, Gm9, Asus4) as slow swelling pads, a
+// deep bass, and now and then one lonely far-away note — all soaked in a
+// long echo and the big reverb. No music box, no plinking.
+const PORTAL_CHORDS = [[50, 53, 57, 64], [46, 50, 53, 57], [43, 46, 50, 57], [45, 50, 52, 57]];
 const PMUS = { step: 0, next: 0, on: false };
 function portalStep(step, t, sd) {
   const bar = Math.floor(step / 16) % 4, s = step % 16, ch = PORTAL_CHORDS[bar];
-  const o = { bus: AU.pmus, echoBus: AU.pecho };
+  const o = { bus: AU.pmus, echoBus: AU.pecho, verb: 0.9, verbBus: AU.pverb };
   if (s === 0) {
-    for (const n of ch) for (const d of [-6, 6])                                     // soft pad
-      tone(NOTE(n), t, sd * 17, { ...o, type: 'triangle', vol: 0.02, pad: true, cutoff: 1400, detune: d });
-    tone(NOTE(ch[0] - 12), t, sd * 16, { ...o, type: 'sine', vol: 0.08, pad: true });   // deep bass note
+    for (const n of ch) for (const d of [-7, 7])                                     // dark, soft pad (sawtooth through a low filter)
+      tone(NOTE(n), t, sd * 17, { ...o, type: 'sawtooth', vol: 0.011, pad: true, cutoff: 700, detune: d });
+    tone(NOTE(ch[0] - 12), t, sd * 16, { ...o, type: 'sine', vol: 0.09, pad: true });   // deep bass note
   }
-  if (s % 2 === 0 && hash2(step, 3, 51) < 0.7) {                                    // music box
-    const n = ch[((hash2(step, 1, 52) * 4) | 0)] + (hash2(step, 2, 53) < 0.4 ? 24 : 12);
-    tone(NOTE(n), t, sd * 7, { ...o, type: 'sine', vol: 0.05, echo: 0.55 });
+  if ((s === 6 || s === 12) && hash2(step, 3, 51) < 0.45) {                         // a lonely far-away note, sometimes
+    const n = ch[(hash2(step, 1, 52) * 4) | 0] + 12;
+    tone(NOTE(n), t, sd * 14, { ...o, type: 'triangle', vol: 0.03, pad: true, cutoff: 1600, echo: 0.5 });
   }
-  if (s === 10 && bar % 2) tone(NOTE(ch[3] + 24), t, sd * 12, { ...o, type: 'sine', vol: 0.025, echo: 0.7 });   // high sparkle
+  if (s === 8 && bar === 3) tone(NOTE(ch[3] + 24), t, sd * 16, { ...o, type: 'sine', vol: 0.012, pad: true, echo: 0.6 });   // a faint high shimmer, once a round
 }
 function portalMusicTick() {
   const ctx = AU.ctx; if (!ctx || !AU.pmus) return;
@@ -1269,7 +1418,7 @@ function portalMusicTick() {
   if (!want) { PMUS.on = false; return; }
   if (PMUS.next < ctx.currentTime - 0.3) PMUS.next = ctx.currentTime + 0.05;
   while (PMUS.next < ctx.currentTime + 0.15) {
-    const sd = 60 / 70 / 4;                                                          // 70 beats per minute: slow
+    const sd = 60 / 52 / 4;                                                          // 52 beats per minute: very slow
     portalStep(PMUS.step, PMUS.next, sd);
     PMUS.next += sd; PMUS.step++;
   }
@@ -1725,6 +1874,7 @@ function startWarp() {
 function startStars() {
   S.mode = 'stars'; S.starT = 0;
   S.dim = { x: 0, y: 0, z: 0, vx: 0, vy: 0 };
+  startDimPath();                                  // the bright dots that lead you to the Rift (dimension.js)
   SFX.dimension();
 }
 
@@ -2470,7 +2620,7 @@ function crackLines(lines, ox, oy) {
 const RED_BOLTS = { glow: '#ff0000', core: '#fff', spr: null };
 const BLUE_BOLTS = { glow: '#5b62ff', core: '#ebe6ff', spr: null };
 function drawBolts(bolts, ox, oy, pal = RED_BOLTS, alpha = 1) {        // alpha = fade the whole thing
-  const GL = pal === BLUE_BOLTS ? GLOW_BLUE : GLOW;
+  const GL = pal.spr || (pal === BLUE_BOLTS ? GLOW_BLUE : GLOW);     // (a palette can bring its own glow sprite)
   const T = S.t, strike = Math.floor(T * 14);
   const shaped = bolts.map(([ln, id, full]) => {             // full = always reach all the way
     const reach = full ? 1 : 0.65 + 0.35 * (0.5 + 0.5 * Math.sin(T * (1.1 + (id % 5) * 0.35) + id * 2.1));
@@ -3300,10 +3450,12 @@ function updateStars(dt) {
   if (keys.w || keys.arrowup) iy--;
   if (keys.s || keys.arrowdown) iy++;
   const il = Math.hypot(ix, iy) || 1, e = 1 - Math.exp(-dt * 2.5);        // floaty: slow to start, slow to stop
-  D.vx += (ix / il * 90 - D.vx) * e; D.vy += (iy / il * 90 - D.vy) * e;
+  const ctl = dimControl();                                                // (the crack's pull takes your control away)
+  D.vx += (ix / il * 90 * ctl - D.vx) * e; D.vy += (iy / il * 90 * ctl - D.vy) * e;
+  updateDimPath(dt);                                                       // the dots, the Rift, the crack (dimension.js) — may pull you
   D.x += D.vx * dt; D.y += D.vy * dt;
   D.z += dt * STAR.speed;
-  if (rnd() < 1.1 * dt) SFX.starPing();
+  if ((D.phase === 'dots' || D.phase === 'rift') && rnd() < 0.35 * dt) SFX.starPing();   // a far chime now and then
 }
 
 function drawStarDimension() {
@@ -3312,6 +3464,8 @@ function drawStarDimension() {
     starImg = stx.createImageData(W, H); starU32 = new Uint32Array(starImg.data.buffer);
   }
   const D = S.dim, T = S.starT, cx = W / 2, cy = H / 2, px = starImg.data;
+  // THE END: the crack has swallowed everything. Only black... and you.
+  if (D.phase === 'void') { g.fillStyle = '#000'; g.fillRect(0, 0, W, H); drawDimYou(cx, cy); return; }
   // 1) deep space: almost-black violet, with huge faint clouds very far away
   g.fillStyle = '#05030d'; g.fillRect(0, 0, W, H);
   g.imageSmoothingEnabled = true;                                          // (smooth, or the huge clouds look blocky)
@@ -3405,13 +3559,379 @@ function drawStarDimension() {
     }
   }
   g.globalAlpha = 1; g.globalCompositeOperation = 'source-over';
-  // 4) you, floating in the middle — purified: white, with a violet core
-  const yx = Math.round(cx + D.vx * 0.08), yy = Math.round(cy + D.vy * 0.08 + Math.sin(T * 1.3) * 1.5);
-  glowAt(yx, yy, 20, 20, 0.5, GLOW_BLUE);
-  diamond(yx, yy, 5, '#fff'); diamond(yx, yy, 2, '#1a1040'); diamond(yx, yy, 1.2, '#b08cff');
+  drawDimPath(cx, cy);                     // the bright dots, the Rift, its explosion (before the bloom, so they GLOW)
   bloom(STAR_BLOOM);
+  drawDimCrack(cx, cy);                    // the pitch-black crack (AFTER the bloom, or the glow would smear it grey)
+  drawDimYou(cx, cy);                      // you — always on top of everything
+  drawDimFlash();                          // white flashes (a dot touched, the explosion)
   // coming out of the white flash
   if (T < 1.8) { g.globalAlpha = Math.pow(1 - T / 1.8, 2); g.fillStyle = '#ece6ff'; g.fillRect(0, 0, W, H); g.globalAlpha = 1; }
+}
+
+// 4) you, floating in the middle — purified: white, with a violet core
+function drawDimYou(cx, cy) {
+  const D = S.dim, T = S.starT;
+  const yx = Math.round(cx + D.vx * 0.08), yy = Math.round(cy + D.vy * 0.08 + Math.sin(T * 1.3) * 1.5);
+  glowAt(yx, yy, 22, 22, 0.6, GLOW_BLUE);
+  diamond(yx, yy, 5, '#fff'); diamond(yx, yy, 2, '#1a1040'); diamond(yx, yy, 1.2, '#b08cff');
+}
+</script>
+<script>
+// V0ID3D — dimension.js: the path through the star dimension: the bright dots, the Rift of Cracked Reality and the crack
+"use strict";
+
+// =====================================================================
+//  THE PATH THROUGH THE STAR DIMENSION
+//  A very bright dot appears somewhere you can see. Float into it: it
+//  bursts, and the next one appears. After 5-10 of them you find THE RIFT
+//  OF CRACKED REALITY. Hold E at it... it explodes, beautifully, and a
+//  pitch-black crack tears open that sucks you in — and then grows until
+//  everything is black. Everything except you.
+//
+//  Positions here use the same units as S.dim.x / S.dim.y (your spot).
+//  On screen, a thing is at: middle of the screen + (its spot - your spot).
+// =====================================================================
+const DIMQ = {
+  firstDot: 2.8,   // seconds before the first dot shows up (after the white flash)
+  nextDot: 0.7,    // pause between one dot and the next
+  touch: 14,       // how close you have to float to touch a dot
+  near: 58,        // how close to the Rift before "[E] ???" pops up
+  hold: 1.6,       // how long you have to hold E
+  boom: 1.6,       // the explosion, before the crack opens
+  open: 0.9,       // the crack tearing open...
+  grow: 9,         // ...then growing, until everything is black
+};
+const GLOW_CYAN = makeSoftDot(70, 210, 255, 128);                 // a cyan glow, for the Rift
+const CYAN_BOLTS = { glow: '#35c8ff', core: '#effcff', spr: GLOW_CYAN };
+
+function startDimPath() {
+  Object.assign(S.dim, { phase: 'dots', found: 0, need: ri(5, 10), dot: null, wait: DIMQ.firstDot,
+                         fx: [], rings: [], hold: 0, rift: null, t2: 0, ct: 0, crack: null, flash: 0 });
+}
+// where YOU are (the exact spot you're drawn at)
+const dimYou = () => [S.dim.x + S.dim.vx * 0.08, S.dim.y + S.dim.vy * 0.08];
+// how much you still control your floating (the crack's pull takes it away)
+const dimControl = () => S.dim.phase === 'crack' ? 1 - smoothstep(clamp(S.dim.ct / 2.5, 0, 1)) : 1;
+
+// a random spot you can SEE: on the screen, and not too close to you
+function dimSpot(minR = 90) {
+  const [yx, yy] = dimYou();
+  for (let i = 0; i < 60; i++) {
+    const a = rnd() * 6.283, r = rr(minR, Math.max(minR + 10, Math.min(W, H) * 0.44));
+    const sx = Math.cos(a) * r, sy = Math.sin(a) * r;
+    if (Math.abs(sx) < W / 2 - 34 && Math.abs(sy) < H / 2 - 34) return { x: yx + sx, y: yy + sy };
+  }
+  return { x: yx + minR, y: yy };
+}
+// a burst of glowing bits (tri = some of them are little triangles)
+function dimBurst(x, y, n, speed, cols, tri = false) {
+  for (let i = 0; i < n; i++) {
+    const a = rnd() * 6.283, v = rr(20, 120) * speed;
+    S.dim.fx.push({ x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v, life: rr(0.5, 1.6), max: 1.6, col: cols[ri(0, cols.length - 1)],
+                    s: rnd() < 0.25 ? 2 : 1, tri: tri && rnd() < 0.6, rot: rnd() * 6.283, spin: rr(-6, 6) });
+  }
+}
+
+// THE RIFT OF CRACKED REALITY: its crack-lightning (a fixed shape that
+// re-strikes a little all the time) and the triangles floating around it
+function makeRealityRift() {
+  const spot = dimSpot(120), bolts = [], tris = [];
+  const nb = ri(5, 7);
+  for (let i = 0; i < nb; i++) {
+    let a = i / nb * 6.283 + rr(-0.4, 0.4), x = 0, y = 0;
+    const ln = [[0, 0]], len = rr(30, 62), n = 7;
+    for (let s = 0; s < n; s++) { a += rr(-0.55, 0.55); x += Math.cos(a) * len / n; y += Math.sin(a) * len / n; ln.push([x, y]); }
+    bolts.push(ln);
+    if (rnd() < 0.7) {                                              // a side branch splitting off it
+      const k = ri(2, n - 2); let [bx, by] = ln[k], ba = a + (rnd() < 0.5 ? 1 : -1) * rr(0.6, 1.1);
+      const br = [[bx, by]];
+      for (let s = 0; s < 4; s++) { ba += rr(-0.5, 0.5); bx += Math.cos(ba) * len * 0.1; by += Math.sin(ba) * len * 0.1; br.push([bx, by]); }
+      bolts.push(br);
+    }
+  }
+  for (let i = 0; i < 18; i++)
+    tris.push({ a: rnd() * 6.283, r: rr(26, 100), w: rr(-0.25, 0.25), rot: rnd() * 6.283, spin: rr(-1.5, 1.5), s: rr(2, 4.5), light: rnd() < 0.5, bob: rnd() * 6.283 });
+  return { ...spot, t: 0, bolts, tris };
+}
+
+// THE CRACK: a long jagged lens (fat in the middle, sharp at both ends) with
+// thin side cracks splitting off it. Stored as u (-1..1 along it) and v
+// (across it); drawCrack scales it by its size L and how fat it is.
+function makeCrack(x, y) {
+  const n = 28, top = [], bot = [];
+  for (let i = 0; i <= n; i++) {
+    const u = i / n * 2 - 1, w = Math.pow(Math.max(0, 1 - u * u), 0.55), sp = (rnd() - 0.5) * 0.1;
+    top.push([u, sp + w * rr(0.45, 1)]); bot.push([u, sp - w * rr(0.45, 1)]);
+  }
+  const br = [];
+  for (let i = 0; i < 7; i++) {
+    const side = rnd() < 0.5 ? 1 : -1, k = ri(5, n - 5), bn = 5, turns = [];
+    for (let s = 0; s <= bn; s++) turns.push(rr(-0.5, 0.5));
+    br.push({ base: (side > 0 ? top : bot)[k], a: side * (Math.PI / 2 + rr(-0.8, 0.8)), len: rr(0.25, 0.6), w: rr(0.02, 0.05), n: bn, turns });
+  }
+  return { x, y, a: rnd() * Math.PI, top, bot, br };
+}
+// how big the crack is at time ct: [L = half its length in pixels, fat = how wide]
+function crackSize(ct) {
+  if (ct < DIMQ.open) {                                             // it TEARS open (and overshoots a little)
+    const u = ct / DIMQ.open - 1, back = 1 + 2.70158 * u * u * u + 1.70158 * u * u;
+    return [48 * back, 0.13];
+  }
+  const gr = clamp((ct - DIMQ.open) / DIMQ.grow, 0, 1);
+  // then it grows... slowly at first, then faster and faster, and gets fatter until it's round
+  return [48 * Math.pow(W * 1.8 / 48, Math.pow(gr, 1.4)), lerp(0.13, 1.3, smoothstep(gr))];
+}
+
+function updateDimPath(dt) {
+  const D = S.dim; if (!D.phase) return;
+  const [yx, yy] = dimYou();
+  D.flash = Math.max(0, D.flash - dt * 1.8);
+  for (const p of D.fx) {
+    p.x += p.vx * dt; p.y += p.vy * dt; p.life -= dt; p.rot += p.spin * dt;
+    const f = p.sink ? 1 + dt * 1.5 : 1 - dt * 1.2;                // bits flying into the crack speed up; the rest slow down
+    p.vx *= f; p.vy *= f;
+  }
+  D.fx = D.fx.filter(p => p.life > 0);
+  for (const r of D.rings) r.t += dt;
+  D.rings = D.rings.filter(r => r.t < r.dur);
+
+  if (D.phase === 'dots') {
+    if (!D.dot) {
+      D.wait -= dt;
+      if (D.wait <= 0) { D.dot = { ...dimSpot(), t: 0 }; SFX.dotAppear(); }
+    } else {
+      const d = D.dot; d.t += dt;
+      if (d.t > 0.35 && Math.hypot(d.x - yx, d.y - yy) < DIMQ.touch) {           // YOU TOUCHED IT
+        D.found++;
+        dimBurst(d.x, d.y, 46, 1, ['#fff', '#fff', '#cfdcff', '#8fa8ff', '#b08cff']);
+        D.rings.push({ x: d.x, y: d.y, t: 0, dur: 0.9, r: 70, col: '#cfdcff' });
+        D.flash = 0.22; SFX.dotTouch(D.found / D.need);
+        D.dot = null;
+        if (D.found >= D.need) { D.phase = 'rift'; D.rift = makeRealityRift(); SFX.riftAppear(); }   // ...the last one: THE RIFT
+        else D.wait = DIMQ.nextDot;
+      }
+    }
+  } else if (D.phase === 'rift') {
+    const R = D.rift; R.t += dt;
+    const d = Math.hypot(R.x - yx, R.y - yy);
+    // HOLD E next to it. Let go, and the charge drains away again.
+    if (d < DIMQ.near && keys.e && R.t > 1) D.hold = Math.min(DIMQ.hold, D.hold + dt);
+    else D.hold = Math.max(0, D.hold - dt * 2);
+    const near = clamp(1 - d / 420, 0, 1), pan = clamp((R.x - yx) / 220, -1, 1);
+    SFX.riftHumSet(near, pan); SFX.riftChargeSet(D.hold / DIMQ.hold);
+    if (rnd() < near * near * 7 * dt) burst(rr(0.01, 0.04), 0.04 + near * 0.12, rr(2500, 8000), 4, false, pan);   // it crackles
+    if (D.hold >= DIMQ.hold) {                                                    // IT EXPLODES
+      D.phase = 'boom'; D.t2 = 0; D.flash = 1;
+      SFX.riftBoom();
+      dimBurst(R.x, R.y, 150, 2.2, ['#fff', '#effcff', '#8fe6ff', '#35c8ff', '#b08cff']);
+      dimBurst(R.x, R.y, 34, 1.6, ['#dfe9f0', '#9aa9b4'], true);                   // its triangles fly away
+      for (const [dl, r, col] of [[0, 170, '#fff'], [0.12, 260, '#8fe6ff'], [0.28, 380, '#b08cff']]) D.rings.push({ x: R.x, y: R.y, t: -dl, dur: 1.3, r, col });
+    }
+  } else if (D.phase === 'boom') {
+    D.t2 += dt;
+    if (D.t2 >= DIMQ.boom) { D.phase = 'crack'; D.ct = 0; D.crack = makeCrack(D.rift.x, D.rift.y); SFX.crackOpen(DIMQ.open + DIMQ.grow); }
+  } else if (D.phase === 'crack') {
+    D.ct += dt;
+    // IT SUCKS YOU IN: a pull toward its middle that keeps getting stronger
+    // (and dimControl() makes your own floating fade out at the same time)
+    const C = D.crack, dx = C.x - yx, dy = C.y - yy, dist = Math.hypot(dx, dy);
+    const pull = 1 - dimControl(), sp = Math.min(dist * 2.2, 30 + D.ct * 35);
+    const tvx = dist > 0.5 ? dx / dist * sp : 0, tvy = dist > 0.5 ? dy / dist * sp : 0, k = pull * Math.min(1, dt * 6);
+    D.vx += (tvx - D.vx) * k; D.vy += (tvy - D.vy) * k;
+    // starlight streaming into it from all around
+    const [L, fat] = crackSize(D.ct), R0 = Math.max(L * fat, 10);
+    if (R0 < W) for (let i = 0; i < 3; i++) {
+      const a = rnd() * 6.283, r = R0 + rr(20, 170), v = rr(80, 200);
+      D.fx.push({ x: C.x + Math.cos(a) * r, y: C.y + Math.sin(a) * r, vx: -Math.cos(a) * v, vy: -Math.sin(a) * v, life: (r - R0 * 0.8) / v, max: 0.8,
+                  col: ['#fff', '#cfdcff', '#8fe6ff', '#b08cff'][ri(0, 3)], s: 1, tri: false, rot: 0, spin: 0, sink: true });
+    }
+    if (D.ct >= DIMQ.open + DIMQ.grow) { D.phase = 'void'; D.fx = []; D.rings = []; }   // it's all black now
+  }
+}
+
+// ---------------------------------------------------------------------
+//  DRAWING
+// ---------------------------------------------------------------------
+function dimTri(x, y, s, rot) {                                     // a little triangle
+  g.beginPath();
+  for (let i = 0; i < 3; i++) { const a = rot + i * 2.094; i ? g.lineTo(x + Math.cos(a) * s, y + Math.sin(a) * s) : g.moveTo(x + Math.cos(a) * s, y + Math.sin(a) * s); }
+  g.closePath(); g.fill();
+}
+// an arrow on the screen edge, pointing at something you can't see right now
+function dimArrow(sx, sy, cx, cy) {
+  const m = 14;
+  if (sx > m && sx < W - m && sy > m && sy < H - m) return;
+  const a = Math.atan2(sy - cy, sx - cx), ca = Math.cos(a), sa = Math.sin(a);
+  const k = Math.min((W / 2 - m) / Math.max(1e-6, Math.abs(ca)), (H / 2 - m) / Math.max(1e-6, Math.abs(sa)));
+  const ax = cx + ca * k, ay = cy + sa * k;
+  glowAt(ax, ay, 16, 16, 0.7, GLOW_BLUE);
+  g.fillStyle = '#eef2ff'; g.beginPath();
+  g.moveTo(ax + ca * 6, ay + sa * 6); g.lineTo(ax + Math.cos(a + 2.4) * 5, ay + Math.sin(a + 2.4) * 5); g.lineTo(ax + Math.cos(a - 2.4) * 5, ay + Math.sin(a - 2.4) * 5);
+  g.closePath(); g.fill();
+}
+// A VERY BRIGHT DOT: a white-hot point in layers of blue glow, with a star's rays
+function drawBrightDot(x, y, age, T) {
+  const b = smoothstep(clamp(age / 0.5, 0, 1)), p = 0.88 + 0.12 * Math.sin(T * 4.2);
+  glowAt(x, y, 64 * p * b, 64 * p * b, 0.5 * b, GLOW_BLUE);
+  glowAt(x, y, 26 * p * b, 26 * p * b, 0.95 * b, PDOTS[0]);
+  glowAt(x, y, 13 * p, 13 * p, b, PDOTS[3]);
+  glowAt(x, y, 7, 7, b, PDOTS[3]);
+  g.save(); g.globalCompositeOperation = 'lighter';
+  for (const [dx, dy, len] of [[1, 0, 40], [0, 1, 28], [0.707, 0.707, 12], [0.707, -0.707, 12]]) {
+    const L = len * p * b, gr = g.createLinearGradient(x - dx * L, y - dy * L, x + dx * L, y + dy * L);
+    gr.addColorStop(0, 'rgba(150,170,255,0)'); gr.addColorStop(0.5, 'rgba(245,247,255,0.95)'); gr.addColorStop(1, 'rgba(150,170,255,0)');
+    g.strokeStyle = gr; g.lineWidth = 1; g.beginPath(); g.moveTo(x - dx * L, y - dy * L); g.lineTo(x + dx * L, y + dy * L); g.stroke();
+  }
+  if (age < 0.6) {                                                  // it appears with a ring of light
+    g.globalAlpha = 1 - age / 0.6; g.strokeStyle = '#cfdcff'; g.beginPath(); g.arc(x, y, 4 + age * 70, 0, 6.2832); g.stroke();
+  }
+  g.restore();
+  g.fillStyle = '#fff'; g.fillRect(Math.round(x) - 1, Math.round(y) - 1, 3, 3);
+}
+// THE RIFT OF CRACKED REALITY (k = 0..1 how charged it is while you hold E)
+function drawRealityRift(R, x, y, T, k) {
+  const app = smoothstep(clamp(R.t / 0.9, 0, 1)), p = (1 + 0.06 * Math.sin(T * 2.4)) * (1 + k * 0.35) * app, sh = k * 2.5;
+  const X = x + rr(-sh, sh), Y = y + rr(-sh, sh);
+  glowAt(X, Y, 120 * p, 120 * p, 0.3, GLOW_CYAN);                  // a wide dark-cyan haze
+  glowAt(X, Y, 52 * p, 52 * p, 0.85, GLOW_CYAN);
+  glowAt(X, Y, 26 * p, 26 * p, 1, PDOTS[3]);                        // the white-hot core
+  glowAt(X, Y, 12 * p, 12 * p, 1, PDOTS[3]);
+  // bits of broken reality: little triangles slowly drifting around it
+  for (const tr of R.tris) {
+    const a = tr.a + T * tr.w, r = tr.r * (1 + k * 0.25) * app;
+    g.globalAlpha = (0.35 + 0.5 * (0.5 + 0.5 * Math.sin(T * 1.7 + tr.bob))) * app;
+    g.fillStyle = tr.light ? '#e6eef3' : '#8796a1';
+    dimTri(X + Math.cos(a) * r, Y + Math.sin(a) * r * 0.85 + Math.sin(T + tr.bob) * 2, tr.s, tr.rot + T * tr.spin);
+  }
+  g.globalAlpha = 1;
+  // its CRACKS: white lightning branching out of the core
+  drawBolts(R.bolts.map((ln, i) => [ln.map(([bx, by]) => [X + bx * p, Y + by * p]), 1600 + i, true]), 0, 0, CYAN_BOLTS, app);
+  g.fillStyle = '#fff'; g.fillRect(Math.round(X) - 1, Math.round(Y) - 1, 3, 3);
+}
+
+// everything on the path, drawn BEFORE the bloom so it all glows
+function drawDimPath(cx, cy) {
+  const D = S.dim, T = S.starT; if (!D.phase) return;
+  const at = (x, y) => [cx + x - D.x, cy + y - D.y];               // a spot -> where it is on the screen
+  if (D.dot) {
+    const [sx, sy] = at(D.dot.x, D.dot.y);
+    drawBrightDot(sx, sy, D.dot.t, T);
+    dimArrow(sx, sy, cx, cy);
+  }
+  if (D.phase === 'rift') {
+    const R = D.rift, [sx, sy] = at(R.x, R.y), k = D.hold / DIMQ.hold;
+    drawRealityRift(R, sx, sy, T, k);
+    dimArrow(sx, sy, cx, cy);
+    const [yx, yy] = dimYou();
+    if (Math.hypot(R.x - yx, R.y - yy) < DIMQ.near && R.t > 1) {    // the popup: [E] ??? and how long you've held it
+      text('[E] ???', sx, sy - 64, 2, '#effcff', 0.25, 'center');
+      const bw = 46, bx = Math.round(sx - bw / 2), by = Math.round(sy - 46);
+      g.fillStyle = '#12303a'; g.fillRect(bx, by, bw, 2);
+      g.fillStyle = k > 0.97 && Math.floor(T * 20) % 2 ? '#fff' : '#8fe6ff'; g.fillRect(bx, by, Math.round(bw * k), 2);
+    }
+  }
+  if (D.phase === 'boom') {                                         // THE EXPLOSION
+    const R = D.rift, [x, y] = at(R.x, R.y), u = D.t2 / DIMQ.boom, fade = 1 - u;
+    g.imageSmoothingEnabled = true;
+    glowAt(x, y, 150 * (1 + u * 1.5), 150 * (1 + u * 1.5), 0.8 * fade, GLOW_CYAN);
+    glowAt(x, y, 50 * fade + 6, 50 * fade + 6, fade, PDOTS[3]);
+    g.imageSmoothingEnabled = false;
+    g.save(); g.globalCompositeOperation = 'lighter';
+    for (let i = 0; i < 24; i++) {                                  // rays of light shooting out
+      const a = hash2(i, 1, 221) * 6.283, L = (60 + u * 460) * (0.5 + hash2(i, 2, 221));
+      const ex = x + Math.cos(a) * L, ey = y + Math.sin(a) * L, gr = g.createLinearGradient(x, y, ex, ey);
+      gr.addColorStop(0, 'rgba(240,252,255,0.95)'); gr.addColorStop(1, 'rgba(53,200,255,0)');
+      g.strokeStyle = gr; g.lineWidth = 1 + hash2(i, 3, 221) * 2; g.globalAlpha = fade;
+      g.beginPath(); g.moveTo(x, y); g.lineTo(ex, ey); g.stroke();
+    }
+    g.restore();
+    const bolts = [];                                               // lightning blasting outward
+    for (let i = 0; i < 10; i++) {
+      const sd = Math.floor(D.t2 * 10) * 17 + i;
+      let h = hash2(sd, 1, 223) * 6.283, bx = x, by = y;
+      const st = (30 + u * 260) / 7, ln = [[bx, by]];
+      for (let s = 0; s < 7; s++) { h += (hash2(sd * 5 + s, 2, 223) - 0.5) * 1.1; bx += Math.cos(h) * st; by += Math.sin(h) * st; ln.push([bx, by]); }
+      bolts.push([ln, 1700 + i, true]);
+    }
+    drawBolts(bolts, 0, 0, CYAN_BOLTS, fade);
+  }
+  // rings of light flying out
+  g.save(); g.globalCompositeOperation = 'lighter';
+  for (const r of D.rings) {
+    if (r.t < 0) continue;
+    const u = r.t / r.dur, [x, y] = at(r.x, r.y);
+    g.globalAlpha = (1 - u) * 0.9; g.strokeStyle = r.col; g.lineWidth = 2;
+    g.beginPath(); g.arc(x, y, r.r * (1 - Math.pow(1 - u, 3)), 0, 6.2832); g.stroke();
+  }
+  // glowing bits and triangles
+  for (const p of D.fx) {
+    const [x, y] = at(p.x, p.y);
+    if (x < -8 || x > W + 8 || y < -8 || y > H + 8) continue;
+    g.globalAlpha = clamp(p.life / p.max * 1.4, 0, 1); g.fillStyle = p.col;
+    if (p.tri) dimTri(x, y, 3, p.rot); else g.fillRect(Math.round(x), Math.round(y), p.s, p.s);
+  }
+  g.restore();
+}
+
+// THE CRACK: pitch black, with a glowing cyan edge (that fades as it grows)
+// and lightning crackling along it. Drawn AFTER the bloom so it stays black.
+function drawDimCrack(cx, cy) {
+  const D = S.dim; if (D.phase !== 'crack') return;
+  const C = D.crack, [L, fat] = crackSize(D.ct);
+  const sh = D.ct < DIMQ.open ? 2 : 0;                             // it shakes while it tears open
+  const ox = cx + C.x - D.x + rr(-sh, sh), oy = cy + C.y - D.y + rr(-sh, sh), ca = Math.cos(C.a), sa = Math.sin(C.a);
+  const P = (lx, ly) => [ox + lx * ca - ly * sa, oy + lx * sa + ly * ca];   // turn the crack's own (along, across) into screen spots
+  const rim = 1 - smoothstep(clamp((D.ct - DIMQ.open) / (DIMQ.grow * 0.75), 0, 1));
+  const trace = () => {
+    g.beginPath();
+    C.top.forEach(([u, v], i) => { const [x, y] = P(u * L, v * L * fat); i ? g.lineTo(x, y) : g.moveTo(x, y); });
+    for (let i = C.bot.length - 1; i >= 0; i--) { const [u, v] = C.bot[i], [x, y] = P(u * L, v * L * fat); g.lineTo(x, y); }
+    g.closePath();
+  };
+  // the side cracks: thin black wedges splitting off the edge
+  const wedge = b => {
+    let lx = b.base[0] * L, ly = b.base[1] * L * fat * 0.9, a = b.a;
+    const left = [], right = [], seg = b.len * L / b.n;
+    for (let i = 0; i <= b.n; i++) {
+      const w = b.w * L * (1 - i / b.n);
+      left.push(P(lx - Math.sin(a) * w, ly + Math.cos(a) * w)); right.push(P(lx + Math.sin(a) * w, ly - Math.cos(a) * w));
+      a += b.turns[i]; lx += Math.cos(a) * seg; ly += Math.sin(a) * seg;
+    }
+    g.beginPath(); left.forEach(([x, y], i) => i ? g.lineTo(x, y) : g.moveTo(x, y));
+    for (let i = right.length - 1; i >= 0; i--) g.lineTo(right[i][0], right[i][1]);
+    g.closePath();
+  };
+  // 1) the glowing edge (wide soft + narrow bright), under the black
+  g.save(); g.globalCompositeOperation = 'lighter'; g.lineJoin = 'round'; g.strokeStyle = '#35c8ff';
+  if (rim > 0.01) {
+    trace(); g.globalAlpha = 0.22 * rim; g.lineWidth = 10; g.stroke(); g.globalAlpha = 0.6 * rim; g.lineWidth = 3; g.stroke();
+    for (const b of C.br) { wedge(b); g.globalAlpha = 0.5 * rim; g.lineWidth = 3; g.stroke(); }
+  }
+  g.restore();
+  // 2) PITCH BLACK
+  g.fillStyle = '#000';
+  trace(); g.fill();
+  for (const b of C.br) { wedge(b); g.fill(); }
+  // 3) a thin white-hot line right on the edge
+  if (rim > 0.01) { g.save(); g.globalAlpha = rim; g.strokeStyle = '#effcff'; g.lineWidth = 1; trace(); g.stroke(); g.restore(); }
+  // 4) lightning crackling off its edge
+  if (rim > 0.05) {
+    const bolts = [], fq = Math.floor(D.ct * 8);
+    for (let i = 0; i < 6; i++) {
+      const pick = hash2(fq, i, 231) < 0.5 ? C.top : C.bot, [u, v] = pick[1 + ((hash2(fq, i, 232) * (pick.length - 2)) | 0)];
+      let [x, y] = P(u * L, v * L * fat), h = Math.atan2(y - oy, x - ox);
+      const ln = [[x, y]], st = 6 + hash2(fq, i, 233) * 10;
+      for (let s = 0; s < 5; s++) { h += (hash2(fq * 7 + s, i, 234) - 0.5) * 1.2; x += Math.cos(h) * st; y += Math.sin(h) * st; ln.push([x, y]); }
+      bolts.push([ln, 1800 + i, true]);
+    }
+    drawBolts(bolts, 0, 0, CYAN_BOLTS, rim);
+  }
+}
+
+// white flashes over everything (a dot touched, the explosion)
+function drawDimFlash() {
+  const D = S.dim; if (!D.flash) return;
+  g.globalAlpha = Math.pow(D.flash, 1.5); g.fillStyle = '#eefaff'; g.fillRect(0, 0, W, H); g.globalAlpha = 1;
 }
 </script>
 <script>
