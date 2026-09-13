@@ -59,7 +59,9 @@ const CFG = {
   riftDamageTouch: 2,     // touching a Rift hurts this much per second
   timeFillSpeed: 1.5,     // how fast gained time flows into the timer (bigger = faster; ~2 s for +10)
   nodeSpeed: 32,          // how fast Nodes drift (you move 115)
-  nodeLink: 175,          // Nodes closer than this form a node connection
+  nodeLink: 240,          // Nodes closer than this form a node connection
+  nodeSpace: 75,          // Nodes keep at least this far apart from each other
+  nodeGroups: [4, 7],     // how many groups of Nodes each map gets (from, to)
   nodeDrift: 120,         // seconds until the groups have fully drifted apart (lonely Nodes die after 5 s)
   testPortalFirstArea: false,
 };
@@ -71,7 +73,7 @@ const CFG = {
 //  reloads into the new version. build-site.js stamps a real number in here
 //  for the website; 'dev' (your own copy) never checks.
 // =====================================================================
-const BUILD_ID = '20260913094450';
+const BUILD_ID = '20260913101738';
 function checkForUpdate(then = null, resume = null) {
   if (BUILD_ID === 'dev' || location.protocol === 'file:') { if (then) then(); return; }
   if (S.checking) return;
@@ -113,17 +115,26 @@ const bl2 = bloomC2.getContext('2d');
 const psnap = document.createElement('canvas');            // snapshot of the world around the portal
 const psg = psnap.getContext('2d');
 
+// HOW MUCH OF THE MAP YOU SEE. It's measured in the screen's REAL pixels
+// (innerWidth x devicePixelRatio). Browser zoom (Ctrl + scroll) changes
+// innerWidth but not the real pixels — so zooming out can't show you more
+// of the map any more. And nobody ever sees more than VIEW_W x VIEW_H game
+// pixels: a bigger or wider window just gets black bars, not more vision.
+const VIEW_W = 640, VIEW_H = 360;
 function resize() {
-  PX = Math.max(2, Math.min(5, Math.round(innerHeight / 340)));
-  W = Math.max(8, Math.ceil(innerWidth / PX));     // (never 0 wide/tall — a squashed window would crash the drawing)
-  H = Math.max(8, Math.ceil(innerHeight / PX));
+  const dpr = devicePixelRatio || 1, devW = innerWidth * dpr, devH = innerHeight * dpr;
+  PX = Math.max(1, Math.round(devH / VIEW_H));     // how many REAL pixels one game pixel is (a whole number = sharp)
+  W = Math.max(8, Math.min(VIEW_W, Math.ceil(devW / PX)));   // (never 0 wide/tall — a squashed window would crash the drawing)
+  H = Math.max(8, Math.min(VIEW_H, Math.ceil(devH / PX)));
   for (const c of [cv, scratch, psnap]) { c.width = W; c.height = H; }
   redCopy.width = Math.ceil(W / 2); redCopy.height = Math.ceil(H / 2);   // the red ghost is made at half size (4x cheaper)
   rg.imageSmoothingEnabled = false;
   bloomC.width = Math.ceil(W / 4); bloomC.height = Math.ceil(H / 4);
   bloomC2.width = Math.ceil(W / 8); bloomC2.height = Math.ceil(H / 8);
-  cv.style.width = (W * PX) + 'px';
-  cv.style.height = (H * PX) + 'px';
+  const cw = W * PX / dpr, ch = H * PX / dpr;       // its size on the page (in browser pixels)
+  cv.style.width = cw + 'px'; cv.style.height = ch + 'px';
+  cv.style.left = Math.max(0, (innerWidth - cw) / 2) + 'px';   // centred (black bars around it if the window is bigger)
+  cv.style.top = Math.max(0, (innerHeight - ch) / 2) + 'px';
   g.imageSmoothingEnabled = false;
 }
 addEventListener('resize', resize);
@@ -1553,7 +1564,7 @@ function genWorld(n, seed, portal = 0) {
   w.total = w.shards.length;
   // NODES: clumps of 3-8, away from The Anchor, the Rifts and The Portal
   w.nodes = []; w.links = [];
-  const clumps = 2 + Math.floor(R() * 3);                   // 2-4 groups each level
+  const [g0, g1] = CFG.nodeGroups, clumps = g0 + Math.floor(R() * (g1 - g0 + 1));   // 4-7 groups each level
   for (let c = 0; c < clumps; c++) {
     let cx = 0, cy = 0;
     for (let tries = 0; tries < 300; tries++) {
@@ -1564,7 +1575,7 @@ function genWorld(n, seed, portal = 0) {
       break;
     }
     for (let i = 0, size = 3 + Math.floor(R() * 6); i < size; i++)
-      w.nodes.push({ x: cx + (R() - 0.5) * 130, y: cy + (R() - 0.5) * 130, vx: 0, vy: 0,   // spread out
+      w.nodes.push({ x: cx + (R() - 0.5) * 230, y: cy + (R() - 0.5) * 230, vx: 0, vy: 0,   // spread out
                      ang: R() * 6.283, turn: 0, clump: c, id: w.nodes.length, spin: R() * 6.283 });
   }
   // break this area's seal into exactly one piece per shard
@@ -1627,13 +1638,13 @@ function startArea(area, n) {
   particles = []; flyers = []; pops = [];
   S.mode = 'play'; S.intro = 3.2; S.boost = 1; S.msgT = 0; S.rift = 0; S.riftB = null;
   S.hp = CFG.maxHp; S.hurtT = 0; S.riftTouch = -1; S.hitFlash = 0; S.deathCause = null;   // full health each area
-  S.core = 0; S.coreT = 0; S.timePend = 0; S.pure = 0; S.timeGainT = 0;   // (nothing carries over from the last area)
+  S.core = 0; S.coreT = 0; S.timePend = 0; S.pure = 0; S.timeGainT = 0; S.stab = 0;   // (nothing carries over from the last area)
   S.lastSec = Math.ceil(S.time); S.lastHalf = Math.ceil(S.time * 2); S.rewinding = false;
 }
 function newRun() { startArea(1, CFG.firstShards); }
 function nextArea() { startArea(S.area + 1, S.shardCount + ri(CFG.moreShardsMin, CFG.moreShardsMax)); }
 function toTitle(quit = false) {
-  S.mode = 'title';
+  S.mode = 'title'; S.stab = 0;
   world = genWorld(11, 777); player = null; flyers = []; particles = []; pops = [];
   cam.x = 0; cam.y = -30;
   if (quit) checkForUpdate();                     // quit to the menu = a good moment to grab a new version
@@ -1664,6 +1675,9 @@ function sealComplete() {
   SFX.sealed();
   world.anchorPulse = 1; S.shake = 7; S.boost = 1;
   burstParticles(0, 0, 160, 3.2);
+  // ...and every Rift you can see starts to collapse, throwing off its glitch bits
+  for (const b of world.blobs)
+    if (Math.abs(b.x - cam.x) < W * 0.7 && Math.abs(b.y - cam.y) < H * 0.7) burstParticles(b.x, b.y, 16 + b.r * 0.4, 0.9, ['#ff0000', '#ff0000', '#ff0000', '#000', '#fff']);
 }
 // TAKING DAMAGE. cause = what hurt you ('node' or 'rift') — remembered so the
 // death menu can say what killed you. small = a Rift's little bite (it doesn't
@@ -1696,7 +1710,8 @@ const DEATH_TEXT = {
 // with one shining blue/purple dot in the middle. After 4 seconds the dot
 // EXPLODES outward... and you're in THE STAR DIMENSION, forever.
 //   (times are seconds since the warp started)
-const WARP = { whole: 18, zoom: 23, end: 23.4 };
+const WARP = { whole: 18, zoom: 23, end: 23.4,
+               slow: 12 };   // you slow down to a complete stop over the first 12 seconds
 //   (times are seconds since the dot appeared)
 const BEYOND = { burst: 4, stars: 4.75 };
 // how fast the portal's edges close in on you (per second): 1/20 = 4 s in
@@ -1887,7 +1902,7 @@ function glitchK() {
   if (S.mode === 'title') k = 0.18;
   else if (S.mode === 'grabbed' || S.mode === 'dying' || S.mode === 'dead') k = 1;
   else k = CFG.baseGlitch + (1 - CFG.baseGlitch) * Math.pow(lateK(), 1.3);
-  return Math.min(1, k + S.boost * 0.6) * (1 - S.pure * 0.9);     // the portal calms it down
+  return Math.min(1, k + S.boost * 0.6) * (1 - S.pure * 0.9) * (1 - (S.stab || 0));   // the portal calms it down (and a stabilized area is calm)
 }
 // how broken the SCREEN looks: the real breakdown, calmed near the portal
 // (the timer itself keeps running — it only LOOKS clearer)
@@ -1910,6 +1925,7 @@ function update(dt) {
     const d = Math.hypot(player.x - world.portal.x, player.y - world.portal.y);
     pt = Math.pow(clamp(1 - (d - 40) / (CFG.pureRange - 40), 0, 1), 1.2);
   }
+  if (S.mode === 'warping' || S.mode === 'beyond' || S.mode === 'stars') pt = 1;   // once it has taken you, everything stays calm
   // (a slow, soft fade in and out — about 2 seconds. Frozen while paused, so
   // pausing near The Portal doesn't make its calm wear off)
   if (S.mode !== 'paused') S.pure += (pt - S.pure) * (1 - Math.exp(-dt * 0.55));
@@ -1925,7 +1941,7 @@ function update(dt) {
   // (never once The Portal has taken you — from there on it's calm)
   const taken = S.mode === 'warping' || S.mode === 'beyond' || S.mode === 'stars';
   S.gb -= dt;
-  if (S.mode !== 'paused' && !taken && S.gb <= 0 && rnd() < (0.25 * (1 - S.pure) + k * 3) * dt) {
+  if (S.mode !== 'paused' && !taken && S.gb <= 0 && rnd() < (0.25 * (1 - S.pure) + k * 3) * (1 - (S.stab || 0)) * dt) {
     S.gb = rr(0.05, 0.18 + k * 0.3);
     if (S.mode !== 'title') SFX.glitch(k);
   }
@@ -1945,6 +1961,9 @@ function update(dt) {
   else if (S.mode === 'title') { cam.x = Math.sin(S.t * 0.07) * 60; cam.y = -30 + Math.cos(S.t * 0.05) * 30; }
   else if (S.mode === 'clear') {
     const before = S.clearT; S.clearT += dt;
+    // AREA STABILIZED: from the moment the seal is whole, the Rifts collapse
+    // and all the glitchy stuff fades away (S.stab 0 -> 1 over 1.4 seconds)
+    S.stab = smoothstep(clamp((S.clearT - CLEAR.done) / 1.4, 0, 1));
     const ca = 1 - Math.exp(-dt * 1.8);               // the camera glides slowly over to The Anchor
     cam.x += (0 - cam.x) * ca; cam.y += (0 - cam.y) * ca;
     const home = world.shards.filter(s => s.state === 'home');
@@ -1959,10 +1978,20 @@ function update(dt) {
   else if (S.mode === 'warping' || S.mode === 'beyond') {
     const bt0 = S.warpT - WARP.end;                    // (seconds the dot has been showing)
     S.warpT += dt;
-    if (S.mode === 'warping') {                        // you're held right in the middle
+    if (S.mode === 'warping') {
       S.core = Math.min(1, S.core + dt * CORE_SPEED);  // (the portal's edges keep creeping in)
+      // you're NOT pulled anywhere — you can still move, but you get slower
+      // and slower until you can't move at all (squared = the slowing speeds up)
+      const left = Math.pow(Math.max(0, 1 - S.warpT / WARP.slow), 2);
+      let ix = 0, iy = 0;
+      if (keys.a || keys.arrowleft) ix--;
+      if (keys.d || keys.arrowright) ix++;
+      if (keys.w || keys.arrowup) iy--;
+      if (keys.s || keys.arrowdown) iy++;
+      const il = Math.hypot(ix, iy) || 1, sp = CFG.playerSpeed * 0.35 * left, acc = 1 - Math.exp(-dt * 6);
+      player.vx += (ix / il * sp - player.vx) * acc; player.vy += (iy / il * sp - player.vy) * acc;
+      player.x += player.vx * dt; player.y += player.vy * dt;
       const e = 1 - Math.exp(-dt * 3);
-      player.x += (world.portal.x - player.x) * e; player.y += (world.portal.y - player.y) * e;
       cam.x += (player.x - cam.x) * e; cam.y += (player.y - cam.y) * e;
       if (S.warpT >= WARP.end) S.mode = 'beyond';
     } else {
@@ -2266,14 +2295,16 @@ function drawBackground(camX, camY, k, late) {
     }
   }
 
+  // (area stabilized: the far rifts and the far lightning glitch out as well)
+  const gone = S.stab || 0;
   // FAR-AWAY RIFTS: small, dark versions of the corruption masses, deep in
   // the background. Two layers: the further one is smaller and moves slower.
   const rf = Math.floor(S.t * 10);
-  for (const L of [{ p: 0.2, cell: 210, r0: 4, r1: 7, seed: 121 }, { p: 0.38, cell: 170, r0: 7, r1: 12, seed: 131 }]) {
+  if (gone < 1) for (const L of [{ p: 0.2, cell: 210, r0: 4, r1: 7, seed: 121 }, { p: 0.38, cell: 170, r0: 7, r1: 12, seed: 131 }]) {
     const ox = camX * L.p, oy = camY * L.p;
     for (let i = Math.floor(ox / L.cell) - 1; i <= Math.floor((ox + W) / L.cell) + 1; i++)
       for (let j = Math.floor(oy / L.cell) - 1; j <= Math.floor((oy + H) / L.cell) + 1; j++) {
-        const h = hash2(i, j, L.seed); if (h > 0.32) continue;
+        const h = hash2(i, j, L.seed); if (h > 0.32 || (gone && rnd() < gone)) continue;
         const spr = farRift(L.r0 + Math.floor(hash2(i, j, L.seed + 1) * (L.r1 - L.r0 + 1)), Math.floor(hash2(i, j, L.seed + 2) * 3));
         const x = i * L.cell + hash2(i, j, L.seed + 3) * L.cell - ox, y = j * L.cell + hash2(i, j, L.seed + 4) * L.cell - oy;
         if (x < -40 || x > W + 40 || y < -40 || y > H + 40) continue;
@@ -2286,7 +2317,7 @@ function drawBackground(camX, camY, k, late) {
   // split second far behind everything, like a storm far away. The further
   // layer's bolts are smaller and darker. Near the portal they turn blue-purple.
   const P = world.portal, psx = P ? P.x - camX : 1e9, psy = P ? P.y - camY : 1e9;
-  for (const L of [{ p: 0.25, cell: 150, len: 18, seed: 141, glow: '#520000', core: '#9a5a5a' },
+  if (gone < 1) for (const L of [{ p: 0.25, cell: 150, len: 18, seed: 141, glow: '#520000', core: '#9a5a5a' },
                    { p: 0.45, cell: 120, len: 30, seed: 151, glow: '#780000', core: '#b88a8a' }]) {
     const ox = camX * L.p, oy = camY * L.p;
     for (let i = Math.floor(ox / L.cell); i <= Math.floor((ox + W) / L.cell); i++)
@@ -2296,7 +2327,7 @@ function drawBackground(camX, camY, k, late) {
         // each spot gets its own clock; every ~0.3 s it might strike (more often near the portal)
         const tb = Math.floor((S.t + hash2(i, j, L.seed + 2) * 10) * 3);
         if (hash2(i * 13 + j, tb, L.seed + 3) > 0.14 + blue * 0.4) continue;
-        if (hash2(i * 13 + j, Math.floor(S.t * 20), L.seed + 4) < 0.35) continue;   // flicker while it's on
+        if (hash2(i * 13 + j, Math.floor(S.t * 20), L.seed + 4) < 0.35 || (gone && rnd() < gone)) continue;   // flicker while it's on
         let x = x0, y = y0, a = hash2(i, tb, L.seed + 5) * 6.283;
         const pts = [[x, y]];
         for (let s = 0, n = 4 + Math.floor(hash2(j, tb, L.seed + 6) * 4); s < n; s++) {
@@ -2351,7 +2382,10 @@ function drawMotes(camX, camY) {
 }
 
 function drawTears(camX, camY, k, late) {
+  const gone = S.stab || 0;                          // area stabilized: the tears glitch out too
+  if (gone >= 1) return;
   for (const t of world.tears) {
+    if (gone && rnd() < gone) continue;
     const lp = portalCalm(t.x, t.y);                  // purified by the portal: fades out, then gone
     if (lp > 0.55 || rnd() < lp * 1.6) continue;
     const tw = t.w * (1 + late * 1.5), th = t.h * (1 + late * 2.5);
@@ -2488,8 +2522,10 @@ function drawEdge(camX, camY) {
   const e = world.edge, ox = -camX, oy = -camY;
   const far = Math.max(Math.hypot(camX, camY), Math.hypot(camX + W, camY), Math.hypot(camX, camY + H), Math.hypot(camX + W, camY + H));
   if (far < e.min - 240) return;                   // the edge (and its glow) isn't on screen
-  // 1) GLOW along the border, like the rifts have — reaches ~130px into the map
-  glowLine(e.pts, ox, oy, 260, 0.85 + 0.15 * Math.sin(S.t * 1.7));
+  // 1) GLOW along the border, like the rifts have. (It used to be twice as
+  // wide and strong — a big red haze that hid the black and white pieces,
+  // so the border looked all red instead of 60% red / 30% black / 10% white)
+  glowLine(e.pts, ox, oy, 140, 0.5 + 0.1 * Math.sin(S.t * 1.7));
 
   // 2) cracks running from the edge into the map
   const vis = e.cracks.map((ln, i) => [ln, i])
@@ -3296,12 +3332,17 @@ function drawStarDimension() {
     const k = first + L, d = k * STAR.DZ - D.z;
     const fade = clamp((far - d) / 3, 0, 1) * clamp((d - STAR.NEAR) / 0.3, 0, 1);   // fade in far away, out as it passes you
     if (fade <= 0) continue;
-    if (d < 1.6) { near.push([k, d, fade]); continue; }                   // close layers get real glowing stars (below)
+    // close layers get real glowing stars (below). Between depth 2.3 and 1.6 a
+    // layer CROSS-FADES from tiny points to glowing stars (mix 1 -> 0) — a hard
+    // switch made big stars pop up out of nowhere
+    const mix = smoothstep(clamp((d - 1.6) / 0.7, 0, 1));
+    if (mix < 1) near.push([k, d, fade * (1 - mix)]);
+    if (mix <= 0) continue;
     // far layers have their stars packed tighter on screen, so fewer of their
     // grid spots get a star (keep = the chance) — otherwise they'd pile up
     // into a flat purple fog instead of separate stars
-    const keep = Math.min(0.72, 4.5 / (d * d));
-    const bright = fade * 1.5 / (1 + d * 0.22), inv = 1 / d, sp = G * inv;
+    const keepRaw = 4.5 / (d * d), keep = Math.min(0.72, keepRaw);
+    const bright = fade * mix * 1.5 / (1 + d * 0.22), inv = 1 / d, sp = G * inv;
     const ox = D.x + layerOff(k, 0), oy = D.y + layerOff(k, 1);            // (this layer's own shift)
     const gx0 = Math.ceil((ox - cx * d) / G), gx1 = Math.floor((ox + cx * d) / G);
     const gy0 = Math.ceil((oy - cy * d) / G), gy1 = Math.floor((oy + cy * d) / G);
@@ -3316,7 +3357,11 @@ function drawStarDimension() {
         if (h > keep) continue;                                            // this grid spot is empty
         const hh = h * 13.9 % 1;                                           // a 2nd random number from the same one
         const tw = 0.78 + 0.22 * SIN256[((hh * 256 | 0) + ti * (1 + (h * 70 | 0) % 3)) & 255];   // a gentle twinkle
-        const v = bright * tw * (0.85 + hh * 0.15), c = STAR_COL[(h * 97 | 0) & 3];             // (all about equally bright)
+        // as the layer comes closer, 'keep' grows and MORE of its stars switch
+        // on. A star that just switched on FADES in (born 0 -> 1) instead of
+        // popping up at full brightness
+        const born = Math.min(1, (keepRaw - h) / (keepRaw * 0.3));
+        const v = bright * born * tw * (0.85 + hh * 0.15), c = STAR_COL[(h * 97 | 0) & 3];      // (all about equally bright)
         const ix = sx | 0;
         if (ix < 0 || ix >= W - 1) continue;
         const i0 = (iy * W + ix) * 4;
@@ -3336,18 +3381,24 @@ function drawStarDimension() {
   // 3) the NEAR layers: big glowing stars that slide past you
   for (const [k, d, fade] of near) {
     const inv = 1 / d, G2 = G, ox = D.x + layerOff(k, 0), oy = D.y + layerOff(k, 1);
-    const gx0 = Math.floor((ox - (cx + 20) * d) / G2), gx1 = Math.ceil((ox + (cx + 20) * d) / G2);
-    const gy0 = Math.floor((oy - (cy + 20) * d) / G2), gy1 = Math.ceil((oy + (cy + 20) * d) / G2);
+    // look a bit past the screen edges — as far as the biggest glow on this
+    // layer reaches — so a glow slides in from the edge instead of popping in
+    const mg = 8 + 9 * inv;
+    const gx0 = Math.floor((ox - (cx + mg) * d) / G2), gx1 = Math.ceil((ox + (cx + mg) * d) / G2);
+    const gy0 = Math.floor((oy - (cy + mg) * d) / G2), gy1 = Math.ceil((oy + (cy + mg) * d) / G2);
     const kh = Math.imul(k, 83492791);
     for (let gy = gy0; gy <= gy1; gy++) for (let gx = gx0; gx <= gx1; gx++) {
       const h = STAR_TAB[(Math.imul(gx, 73856093) ^ Math.imul(gy, 19349663) ^ kh) & 4095];
       if (h > 0.72) continue;
       const hh = h * 13.9 % 1, tw = 0.78 + 0.22 * SIN256[((hh * 256 | 0) + ti * (1 + (h * 70 | 0) % 3)) & 255];
       const sx = cx + (gx * G2 - ox) * inv, sy = cy + (gy * G2 - oy) * inv, s = (2.2 + hh * 0.6) * inv * 1.3;
-      g.globalAlpha = Math.min(1, fade * tw);
+      const keepRaw = 4.5 / (d * d), born = Math.min(1, (keepRaw - h) / (keepRaw * 0.3));   // (same fade-in as the far stars)
+      if (born <= 0) continue;
+      g.globalAlpha = Math.min(1, fade * tw * born);
       const R = s * 2.4;                                                   // (the glow reaches much further than the star)
       g.drawImage(STAR_GLOW, sx - R, sy - R, R * 2, R * 2);
-      if (s > 6) {                                                         // really close: a sparkle cross
+      if (s > 5) {                                                         // really close: a sparkle cross...
+        g.globalAlpha = Math.min(1, fade * tw * born) * clamp((s - 5) / 4, 0, 1);   // ...that FADES in as the star comes closer (it used to pop on)
         g.fillStyle = '#dfe5ff'; const L = s * 0.9;
         g.fillRect(Math.round(sx - L), Math.round(sy), Math.round(L * 2), 1); g.fillRect(Math.round(sx), Math.round(sy - L * 0.7), 1, Math.round(L * 1.4));
       }
@@ -3401,11 +3452,11 @@ function updateNodes(dt) {
     let tx = (Math.cos(cd.ang) * together * !nd.dead + Math.cos(nd.ang) * own) * sp;
     let ty = (Math.sin(cd.ang) * together * !nd.dead + Math.sin(nd.ang) * own) * sp;
     const m = mid[nd.clump], mx = m.x / m.n - nd.x, my = m.y / m.n - nd.y, md = Math.hypot(mx, my);
-    if (md > 90 && !nd.dead) { tx += mx / md * 22 * together; ty += my / md * 22 * together; }   // stay (loosely) with your group
+    if (md > 150 && !nd.dead) { tx += mx / md * 22 * together; ty += my / md * 22 * together; }   // stay (loosely) with your group
     for (const o of N) {                                                     // keep your distance from each other
       if (o === nd) continue;
       const dx = nd.x - o.x, dy = nd.y - o.y, d = Math.hypot(dx, dy);
-      if (d < 42 && d > 0) { tx += dx / d * 26; ty += dy / d * 26; }
+      if (d < CFG.nodeSpace && d > 0) { tx += dx / d * 26; ty += dy / d * 26; }
     }
     for (const b of world.blobs) {
       const dx = nd.x - b.x, dy = nd.y - b.y, d = Math.hypot(dx, dy);
@@ -3468,9 +3519,14 @@ function updateNodes(dt) {
 
 function drawNodes(camX, camY) {
   const T = S.t, fq = Math.floor(T * 15);
+  // AREA STABILIZED: Nodes and their connections GLITCH OUT — they flicker
+  // more and more (skipped more often) until they're gone
+  const gone = S.stab || 0;
+  if (gone >= 1) return;
   // NODE CONNECTIONS: spiky red lightning — a zig-zag whose teeth flip every strike
   for (const [a, b, s] of world.links) {
     if (s < 1 && rnd() > s) continue;                                        // weak ones flicker
+    if (gone && rnd() < gone) continue;
     const x0 = a.x - camX, y0 = a.y - camY, x1 = b.x - camX, y1 = b.y - camY;
     if (Math.max(x0, x1) < -10 || Math.min(x0, x1) > W + 10 || Math.max(y0, y1) < -10 || Math.min(y0, y1) > H + 10) continue;
     const len = Math.hypot(x1 - x0, y1 - y0) || 1, nx = -(y1 - y0) / len, ny = (x1 - x0) / len;
@@ -3492,6 +3548,7 @@ function drawNodes(camX, camY) {
   for (const nd of world.nodes) {
     const x = nd.x - camX, y = nd.y - camY;
     if (x < -20 || x > W + 20 || y < -20 || y > H + 20) continue;
+    if (gone && rnd() < gone) continue;
     const d = nd.dead ? Math.min(1, nd.deadT) : 0;                          // 0 = alive ... 1 = fully dead
     if (!nd.dead && nd.lonely > 2 && hash2(nd.id, Math.floor(T * (6 + nd.lonely * 3)), 83) < 0.35) continue;   // dying: flicker
     if (d < 1) glowAt(x, y, 18, 18, 0.6 * (1 - d));
@@ -3537,7 +3594,12 @@ function bakeRiftsAhead(camX, camY) {
 
 function drawBlobs(camX, camY, k, late) {
   const fq = Math.floor(S.t * 12);
-  bakeRiftsAhead(camX, camY);
+  // AREA STABILIZED: every Rift COLLAPSES — it shrinks into nothing (cs goes
+  // 1 -> 0), shaking as it goes, and then it's gone for the rest of the area
+  const gone = S.stab || 0;
+  if (gone >= 1) return;
+  const cs = 1 - gone;
+  if (gone <= 0) bakeRiftsAhead(camX, camY);
   for (const b of world.blobs) {
     const m = b.r * 4;                                // rough size incl. the glow
     if (b.x - camX > W + m || b.y - camY > H + m || b.x - camX < -m || b.y - camY < -m) continue;
@@ -3546,7 +3608,7 @@ function drawBlobs(camX, camY, k, late) {
     // glowing aura: slowly breathing, brighter and bigger when you're near.
     // Near the portal the red glow fades and a calm BLUE glow takes over.
     const breathe = 0.8 + 0.2 * Math.sin(S.t * 2.1 + (b.seed % 100));
-    const gs = b.r * (2.4 + r * 0.9);
+    const gs = b.r * (2.4 + r * 0.9) * cs;
     glowAt(b.x - camX, b.y - camY, gs, gs * 1.25, (0.38 + late * 0.2 + r * 0.45) * breathe * (1 - lp));
     if (lp > 0) glowAt(b.x - camX, b.y - camY, gs, gs * 1.25, 0.5 * lp * breathe, GLOW_BLUE);
     if (!b.spr) b.spr = startBlob(Math.round(b.r), b.seed);  // not baked yet? bake its first frame now (the rest come bit by bit)
@@ -3562,7 +3624,13 @@ function drawBlobs(camX, camY, k, late) {
     }
     const P = world.portal;
     const sk = P ? clamp(1 - Math.hypot(P.x - b.x, P.y - b.y) / 340, 0, 1) : 0;   // how hard the portal pulls it
-    if (sk > 0) {
+    if (gone > 0) {
+      // COLLAPSING: drawn smaller and smaller around its middle, trembling
+      const q = cs * (1 + 0.12 * Math.sin(S.t * 40 + b.seed)), sh = 3 * gone;
+      g.save(); g.translate(Math.round(b.x - camX + rr(-sh, sh)), Math.round(b.y - camY + rr(-sh, sh))); g.scale(q, q);
+      g.drawImage(fr, -sp.cx, -sp.cy);
+      g.restore();
+    } else if (sk > 0) {
       // BEING SUCKED IN: stretched toward the portal (and squeezed thinner),
       // leaning in with a pull that pulses, like it's fighting it
       const ang = Math.atan2(P.y - b.y, P.x - b.x);
@@ -3593,8 +3661,8 @@ function drawBlobs(camX, camY, k, late) {
       }
     } else g.drawImage(fr, Math.round(x + jx), Math.round(y));
     // live glitch bits flickering around it — a few drift far out
-    for (let i = 0, n = Math.round((3 + ((b.r / 8) | 0) + r * 8) * (1 - lp)); i < n; i++) {
-      const a = rnd() * 6.283, d = b.r * (1 + Math.pow(rnd(), 1.8) * 1.9);
+    for (let i = 0, n = Math.round((3 + ((b.r / 8) | 0) + r * 8) * (1 - lp) * cs); i < n; i++) {
+      const a = rnd() * 6.283, d = b.r * cs * (1 + Math.pow(rnd(), 1.8) * 1.9);
       const [pw, ph] = glitchSize(); g.fillStyle = glitchCol();
       g.fillRect(Math.round(b.x - camX + Math.cos(a) * d), Math.round(b.y - camY + Math.sin(a) * d * 1.25), pw, ph);
     }
@@ -4528,7 +4596,7 @@ function render() {
   drawTears(camX, camY, k, late);
   drawEdge(camX, camY);
   drawPortal(camX, camY, 'inner');
-  if (world.portal && player && S.mode === 'play' &&                     // walking over it? stay on top
+  if (world.portal && player && (S.mode === 'play' || S.mode === 'warping') &&   // in or on it? you stay visible, on top
       Math.hypot(player.x - world.portal.x, player.y - world.portal.y) < 80) drawPlayer(camX, camY, k);
 
   postFX(k, late);
