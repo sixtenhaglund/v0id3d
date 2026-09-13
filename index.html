@@ -50,7 +50,7 @@ const CFG = {
   testStartCarried: 0,
   portalChance: 0.2,      // the blue portal shows up in 1 of every 5 areas
   pureRange: 190,         // how far (pixels) the portal's reach goes: calm, slowing, pulling
-  portalPull: 34,         // how hard The Portal drags you in (a slow drift — you can always walk back out, slowly)
+  portalPull: 70,         // how hard The Portal drags you in (strong now — but you can still walk back out, slowly)
   maxHp: 100,             // your health
   nodeDamage: 8,          // walking into a node connection
   hitCooldown: 0.9,       // after a hit you can't be hit again for this long (seconds)
@@ -73,7 +73,7 @@ const CFG = {
 //  reloads into the new version. build-site.js stamps a real number in here
 //  for the website; 'dev' (your own copy) never checks.
 // =====================================================================
-const BUILD_ID = '20260913141937';
+const BUILD_ID = '20260913142234';
 function checkForUpdate(then = null, resume = null) {
   if (BUILD_ID === 'dev' || location.protocol === 'file:') { if (then) then(); return; }
   if (S.checking) return;
