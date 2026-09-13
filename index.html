@@ -73,7 +73,7 @@ const CFG = {
 //  reloads into the new version. build-site.js stamps a real number in here
 //  for the website; 'dev' (your own copy) never checks.
 // =====================================================================
-const BUILD_ID = '20260913142234';
+const BUILD_ID = '20260913143941';
 function checkForUpdate(then = null, resume = null) {
   if (BUILD_ID === 'dev' || location.protocol === 'file:') { if (then) then(); return; }
   if (S.checking) return;
@@ -1045,6 +1045,21 @@ const SFX = {
     o.frequency.setValueAtTime(34, t); o.frequency.exponentialRampToValueAtTime(22, t + dur);
     gn.gain.setValueAtTime(0, t); gn.gain.linearRampToValueAtTime(0.5, t + dur - 0.05); gn.gain.linearRampToValueAtTime(0, t + dur);
     o.connect(gn).connect(AU.master); o.start(t); o.stop(t + dur + 0.1);
+    // THE WIND rushing into the hole: noise through a filter that wanders,
+    // with GUSTS (two slow waves wobbling its volume), plus a thin whistle
+    // (a very narrow filter = one "note" of noise). Grows until the very end.
+    const env = ctx.createGain(); env.gain.setValueAtTime(0, t);
+    env.gain.linearRampToValueAtTime(0.16, t + 2.5); env.gain.linearRampToValueAtTime(0.32, t + dur - 0.1); env.gain.linearRampToValueAtTime(0, t + dur);
+    env.connect(AU.master); const ev = ctx.createGain(); ev.gain.value = 0.5; env.connect(ev).connect(AU.verb);
+    const gust = ctx.createGain(); gust.gain.value = 1; gust.connect(env);
+    for (const [f, a] of [[0.31, 0.35], [0.73, 0.2]]) { const l = ctx.createOscillator(), lg = ctx.createGain(); l.frequency.value = f; lg.gain.value = a; l.connect(lg).connect(gust.gain); l.start(t); l.stop(t + dur + 0.1); }
+    for (const [f0, q, v, lfo, amt] of [[850, 0.7, 1, 0.23, 380], [1700, 14, 0.35, 0.4, 420]]) {   // the rush, then the whistle
+      const n = ctx.createBufferSource(); n.buffer = AU.noise; n.loop = true;
+      const bp = ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = f0; bp.Q.value = q;
+      const l = ctx.createOscillator(), lg = ctx.createGain(); l.frequency.value = lfo; lg.gain.value = amt; l.connect(lg).connect(bp.frequency);
+      const ng = ctx.createGain(); ng.gain.value = v;
+      n.connect(bp).connect(ng).connect(gust); n.start(t); l.start(t); n.stop(t + dur + 0.1); l.stop(t + dur + 0.1);
+    }
     if (AU.dim) { AU.dim.gain.cancelScheduledValues(t); AU.dim.gain.setValueAtTime(AU.dim.gain.value, t); AU.dim.gain.linearRampToValueAtTime(0, t + dur * 0.85); }
     thump(0.6, 60, 20, 3, dur);                                  // the very last sound, as it all goes black
   },
@@ -3612,7 +3627,7 @@ const CYAN_BOLTS = { glow: '#35c8ff', core: '#effcff', spr: GLOW_CYAN };
 
 function startDimPath() {
   Object.assign(S.dim, { phase: 'dots', found: 0, need: ri(5, 10), dot: null, wait: DIMQ.firstDot,
-                         fx: [], rings: [], hold: 0, rift: null, t2: 0, ct: 0, crack: null, flash: 0 });
+                         fx: [], rings: [], wind: [], hold: 0, rift: null, t2: 0, ct: 0, crack: null, flash: 0 });
 }
 // where YOU are (the exact spot you're drawn at)
 const dimYou = () => [S.dim.x + S.dim.vx * 0.08, S.dim.y + S.dim.vy * 0.08];
@@ -3660,60 +3675,51 @@ function makeRealityRift() {
   return { ...spot, t: 0, bolts, tris };
 }
 
-// THE CRACK: a long jagged lens (fat in the middle, sharp at both ends) with
-// thin side cracks splitting off it. Stored as u (-1..1 along it) and v
-// (across it); drawCrack scales it by its size L and how fat it is.
-function makeCrack(x, y) {
-  const n = 28, top = [], bot = [];
-  for (let i = 0; i <= n; i++) {
-    const u = i / n * 2 - 1, w = Math.pow(Math.max(0, 1 - u * u), 0.55), sp = (rnd() - 0.5) * 0.1;
-    top.push([u, sp + w * rr(0.45, 1)]); bot.push([u, sp - w * rr(0.45, 1)]);
-  }
-  const br = [];
-  for (let i = 0; i < 7; i++) {
-    const side = rnd() < 0.5 ? 1 : -1, k = ri(5, n - 5), bn = 5, turns = [];
-    for (let s = 0; s <= bn; s++) turns.push(rr(-0.5, 0.5));
-    br.push({ base: (side > 0 ? top : bot)[k], a: side * (Math.PI / 2 + rr(-0.8, 0.8)), len: rr(0.25, 0.6), w: rr(0.02, 0.05), n: bn, turns });
-  }
-  return { x, y, a: rnd() * Math.PI, top, bot, br, web: makeCrackWeb() };
-}
-// how big the crack is at time ct: [L = half its length in pixels, fat = how wide].
-// It TEARS open (overshooting a little) and then stays that size — it's the
-// cracks around it that spread (see makeCrackWeb)
-function crackSize(ct) {
-  if (ct >= DIMQ.open) return [48, 0.13];
-  const u = ct / DIMQ.open - 1, back = 1 + 2.70158 * u * u * u + 1.70158 * u * u;
-  return [48 * back, 0.13];
-}
+// THE CRACK, which breaks like glass. It starts as a few tiny cracks right
+// where the Rift was (the very first shards break out of the middle), and
+// from there a spiderweb spreads out: cracks shooting OUT, and rings going
+// AROUND. Where they cross, they cut everything into pieces — and every
+// piece is cut once more corner to corner, into two sharp TRIANGLES (glass
+// shards). Once a shard is cracked all the way around, it breaks off and is
+// sucked into the hole... and behind it there's nothing. Pitch black.
+// (Positions are relative to the crack's middle.)
+function makeCrack(x, y) { return { x, y, web: makeCrackWeb() }; }
 
-// THE CRACKS SPREAD, LIKE BREAKING GLASS: a spiderweb around the crack —
-// cracks shooting OUT from it, and rings going AROUND it. Where they cross
-// they cut everything into pieces ("cells"). The cracks grow outward; once a
-// piece is cracked all the way around, it breaks off and falls away...
-// and behind it there's nothing. Pitch black. (Positions are relative to the
-// crack's middle.)
 // (the cracks spread out to 480 px — just past the screen's corners, which
-// are ~370 px from the middle. Pieces further out than that break off at the
-// very end, together with the last ones you can see.)
-const webReach = ct => ct < DIMQ.open ? 0 : 24 + 456 * Math.pow(Math.min(1, (ct - DIMQ.open) / DIMQ.spread), 1.5);   // how far the cracks have spread (slow, then faster)
-const webTime = r => DIMQ.open + DIMQ.spread * Math.pow(clamp((r - 24) / 456, 0, 1), 1 / 1.5);                        // ...and WHEN they reach distance r
+// are ~370 px from the middle. Shards further out break off at the very end,
+// together with the last ones you can see.) The first 34 px crack open fast,
+// while it tears open; after that it's slow, then faster and faster.
+const webReach = ct => ct < DIMQ.open ? 34 * smoothstep(ct / DIMQ.open) : 34 + 446 * Math.pow(Math.min(1, (ct - DIMQ.open) / DIMQ.spread), 1.5);
+const webTime = r => r <= 34 ? DIMQ.open * r / 34 : DIMQ.open + DIMQ.spread * Math.pow(clamp((r - 34) / 446, 0, 1), 1 / 1.5);   // WHEN the cracks reach distance r
 function makeCrackWeb() {
-  const N = ri(12, 16), rings = [0, 16, 34, 58, 90, 132, 186, 256, 346, 460, 600, 780], a0 = rnd() * 6.283, rad = [];
-  for (let i = 0; i < N; i++) {                                     // each crack going out = a wobbly line of points
-    const a = a0 + (i + rr(-0.3, 0.3)) / N * 6.283, pts = [];
-    for (let j = 0; j < rings.length; j++) { const r = rings[j] * rr(0.85, 1.15), aj = a + rr(-0.1, 0.1); pts.push([Math.cos(aj) * r, Math.sin(aj) * r]); }
+  const N = ri(22, 28), rings = [0, 10, 21, 34, 49, 66, 86, 109, 135, 165, 199, 238, 282, 332, 390, 455, 530], a0 = rnd() * 6.283, rad = [];
+  for (let i = 0; i < N; i++) {                                     // each crack going out = a jagged line of points
+    const a = a0 + (i + rr(-0.25, 0.25)) / N * 6.283, pts = [];
+    for (let j = 0; j < rings.length; j++) {
+      // (each point wobbles, but less than halfway to its neighbours — so pieces never overlap)
+      const gap = Math.min(j ? rings[j] - rings[j - 1] : 0, j < rings.length - 1 ? rings[j + 1] - rings[j] : 75);
+      const r = rings[j] + (rnd() - 0.5) * 0.6 * gap, aj = a + rr(-0.07, 0.07);
+      pts.push([Math.cos(aj) * r, Math.sin(aj) * r]);
+    }
     rad.push(pts);
   }
-  const cells = [];
+  const cells = [], quads = [];
   for (let i = 0; i < N; i++) for (let j = 0; j < rings.length - 1; j++) {
-    const A = rad[i], B = rad[(i + 1) % N], poly = [A[j], A[j + 1], B[j + 1], B[j]];   // the piece between two cracks and two rings
-    const cx = poly.reduce((s, p) => s + p[0], 0) / 4, cy = poly.reduce((s, p) => s + p[1], 0) / 4;
-    // it breaks off a moment after the cracks around it are complete (the middle ones right away)
-    const fall = j === 0 ? DIMQ.open * 0.6 : webTime(rings[j + 1]) + rr(0.15, 1.3);
-    cells.push({ poly, cx, cy, i, j, fall, vx: rr(-30, 30), vy: rr(-25, 5), spin: rr(-2.2, 2.2), started: false });
+    const A = rad[i], B = rad[(i + 1) % N], q = [A[j], A[j + 1], B[j + 1], B[j]];   // the piece between two cracks and two rings
+    // cut it corner to corner (a random one of its two diagonals) into 2 sharp triangles
+    const flip = rnd() < 0.5, diag = j === 0 ? null : flip ? [q[0], q[2]] : [q[1], q[3]];
+    const tris = j === 0 ? [[q[0], q[1], q[2]]] : flip ? [[q[0], q[1], q[2]], [q[0], q[2], q[3]]] : [[q[0], q[1], q[3]], [q[1], q[2], q[3]]];
+    const cracked = webTime(rings[j + 1]), quad = { diag, tris: [], cracked };
+    for (const poly of tris) {
+      const cx = (poly[0][0] + poly[1][0] + poly[2][0]) / 3, cy = (poly[0][1] + poly[1][1] + poly[2][1]) / 3;
+      // it breaks off a moment after the cracks around it are complete
+      const c = { poly, cx, cy, fall: cracked + (j < 2 ? rr(0, 0.25) : rr(0.1, 1.1)), spin: rr(-4, 4), started: false };
+      cells.push(c); quad.tris.push(c);
+    }
+    quads.push(quad);
   }
-  const end = Math.max(...cells.map(c => c.fall)) + DIMQ.fallDur;   // when the very last piece is gone
-  return { N, rings, rad, cells, end };
+  const end = Math.max(...cells.map(c => c.fall)) + DIMQ.fallDur;   // when the very last shard is gone
+  return { N, rings, rad, cells, quads, end };
 }
 
 function updateDimPath(dt) {
@@ -3722,8 +3728,7 @@ function updateDimPath(dt) {
   D.flash = Math.max(0, D.flash - dt * 1.8);
   for (const p of D.fx) {
     p.x += p.vx * dt; p.y += p.vy * dt; p.life -= dt; p.rot += p.spin * dt;
-    const f = p.sink ? 1 + dt * 1.5 : 1 - dt * 1.2;                // bits flying into the crack speed up; the rest slow down
-    p.vx *= f; p.vy *= f;
+    p.vx *= 1 - dt * 1.2; p.vy *= 1 - dt * 1.2;                     // (they slow down as they fly)
   }
   D.fx = D.fx.filter(p => p.life > 0);
   for (const r of D.rings) r.t += dt;
@@ -3772,19 +3777,21 @@ function updateDimPath(dt) {
     const pull = 1 - dimControl(), sp = Math.min(dist * 2.2, 30 + D.ct * 35);
     const tvx = dist > 0.5 ? dx / dist * sp : 0, tvy = dist > 0.5 ? dy / dist * sp : 0, k = pull * Math.min(1, dt * 6);
     D.vx += (tvx - D.vx) * k; D.vy += (tvy - D.vy) * k;
-    // starlight streaming into the hole in its middle (while there's still starlight left)
-    const R0 = 14;
-    if (D.ct < C.web.end * 0.6) for (let i = 0; i < 2; i++) {
-      const a = rnd() * 6.283, r = R0 + rr(20, 150), v = rr(80, 200);
-      D.fx.push({ x: C.x + Math.cos(a) * r, y: C.y + Math.sin(a) * r, vx: -Math.cos(a) * v, vy: -Math.sin(a) * v, life: (r - R0) / v, max: 0.8,
-                  col: ['#fff', '#cfdcff', '#8fe6ff', '#b08cff'][ri(0, 3)], s: 1, tri: false, rot: 0, spin: 0, sink: true });
-    }
-    // a piece breaking off: sometimes a little glass "tink" (not every one — there are 150+)
+    // THE WIND: streaks of air rushing into the hole from all around, swirling
+    // a little (like water down a drain), faster and faster the closer they get.
+    // Kept as distance r + angle a from the hole — that makes "toward the
+    // middle" simply: make r smaller.
+    const grow = clamp(D.ct / 3, 0, 1);                                         // (it picks up over the first few seconds)
+    if (D.ct < C.web.end - 0.6) for (let i = 0, n = Math.round(3 + grow * 9); i < n; i++)
+      D.wind.push({ r: rr(40, 440), a: rnd() * 6.283, v: rr(60, 140), sw: rr(0.2, 0.5), b: rnd() < 0.3 });
+    for (const w of D.wind) { w.v *= 1 + dt * 1.6; w.r -= w.v * dt; w.a += w.sw * w.v * dt / Math.max(w.r, 25); }
+    D.wind = D.wind.filter(w => w.r > 5);
+    // a shard breaking off: sometimes a little glass "tink" (not every one — there are 700+)
     for (const c of C.web.cells) if (!c.started && D.ct >= c.fall) {
       c.started = true;
-      if (c.j > 0 && rnd() < 0.3) SFX.glassBit(clamp((C.x + c.cx - yx) / 250, -1, 1));
+      if (rnd() < 0.12) SFX.glassBit(clamp((C.x + c.cx - yx) / 250, -1, 1));
     }
-    if (D.ct >= C.web.end) { D.phase = 'void'; D.fx = []; D.rings = []; }            // the last piece is gone: it's all black now
+    if (D.ct >= C.web.end) { D.phase = 'void'; D.fx = []; D.rings = []; D.wind = []; }   // the last shard is gone: it's all black now
   }
 }
 
@@ -3913,125 +3920,89 @@ function drawDimPath(cx, cy) {
 }
 
 // THE CRACK. Drawn AFTER the bloom so its black stays pitch black.
-//  1) a copy of the picture right now (falling pieces carry their bit of it)
-//  2) where pieces have broken off: nothing — pitch black
-//  3) the crack in the middle, with its glowing edge
-//  4) the spreading cracks (glowing cyan, white-hot in the middle), with
-//     lightning at their tips
-//  5) the pieces that are falling away right now
+//  1) a copy of the picture right now (the flying shards carry their bit of it)
+//  2) where shards have broken off: nothing — pitch black
+//  3) the cracks (glowing cyan, white-hot in the middle), with lightning at
+//     their growing tips
+//  4) the shards being sucked into the hole right now
+//  5) the WIND rushing into the hole
 function drawDimCrack(cx, cy) {
   const D = S.dim; if (D.phase !== 'crack') return;
   const C = D.crack, Wb = C.web, t = D.ct;
   const sh = t < DIMQ.open ? 2 : 0;                                // it shakes while it tears open
   const ox = cx + C.x - D.x + rr(-sh, sh), oy = cy + C.y - D.y + rr(-sh, sh);
-  const NR = Wb.rings.length - 1, cell = (i, j) => Wb.cells[((i + Wb.N) % Wb.N) * NR + j], gone = c => t >= c.fall;
+  const NR = Wb.rings.length - 1, gone = c => t >= c.fall;
+  const quad = (i, j) => Wb.quads[((i + Wb.N) % Wb.N) * NR + j];
+  const quadGone = q => q.tris.every(gone);                        // (both its shards have broken off)
   // 1)
   sg.globalCompositeOperation = 'copy'; sg.drawImage(cv, 0, 0); sg.globalCompositeOperation = 'source-over';
-  // 2) (all the holes in ONE path, so there are no thin seams between neighbouring pieces)
+  // 2) (all the holes in ONE path, so there are no thin seams between neighbouring shards)
   g.fillStyle = '#000'; g.beginPath();
   for (const c of Wb.cells) if (gone(c)) { c.poly.forEach(([x, y], k) => k ? g.lineTo(ox + x, oy + y) : g.moveTo(ox + x, oy + y)); g.closePath(); }
   g.fill();
-  // 3)
-  drawCrackLens(C, ox, oy, t);
-  // 4)
+  // 3) (a crack between two pieces that are BOTH gone is gone too — no lines floating in the black)
   const R = webReach(t), seg = [], tips = [];
   for (let i = 0; i < Wb.N; i++) {
     const P = Wb.rad[i], Q = Wb.rad[(i + 1) % Wb.N];
     for (let j = 0; j < NR; j++) {
       if (Wb.rings[j] >= R) break;
-      // (a crack between two pieces that have BOTH fallen is gone — no lines floating in the black)
-      if (!gone(cell(i - 1, j)) || !gone(cell(i, j))) {
-        const f = Math.min(1, (R - Wb.rings[j]) / (Wb.rings[j + 1] - Wb.rings[j]));      // still growing?
+      const here = quad(i, j);
+      if (!quadGone(quad(i - 1, j)) || !quadGone(here)) {         // the crack going OUT (still growing?)
+        const f = Math.min(1, (R - Wb.rings[j]) / (Wb.rings[j + 1] - Wb.rings[j]));
         const e = [lerp(P[j][0], P[j + 1][0], f), lerp(P[j][1], P[j + 1][1], f)];
-        seg.push([P[j], e]); if (f < 1) tips.push(e);
+        seg.push([P[j], e]); if (f < 1 && i % 2) tips.push(e);
       }
-      const rf = j > 0 ? clamp((R - Wb.rings[j] * 1.3) / (Wb.rings[j] * 0.4 + 10), 0, 1) : 0;   // the rings crack a bit later
-      if (rf > 0 && (!gone(cell(i, j - 1)) || !gone(cell(i, j)))) seg.push([P[j], [lerp(P[j][0], Q[j][0], rf), lerp(P[j][1], Q[j][1], rf)]]);
+      const rf = j > 0 ? clamp((R - Wb.rings[j] * 1.25) / (Wb.rings[j] * 0.35 + 8), 0, 1) : 0;   // the ring cracks come a bit later
+      if (rf > 0 && (!quadGone(quad(i, j - 1)) || !quadGone(here))) seg.push([P[j], [lerp(P[j][0], Q[j][0], rf), lerp(P[j][1], Q[j][1], rf)]]);
+      // the corner-to-corner crack that splits a piece into its 2 shards (once it's cracked all round)
+      if (here.diag && R >= Wb.rings[j + 1] && !quadGone(here)) seg.push(here.diag);
     }
   }
   const lines = () => { g.beginPath(); for (const [a, b] of seg) { g.moveTo(ox + a[0], oy + a[1]); g.lineTo(ox + b[0], oy + b[1]); } };
   g.save(); g.globalCompositeOperation = 'lighter'; g.strokeStyle = '#35c8ff'; g.lineCap = 'round';
-  lines(); g.globalAlpha = 0.25; g.lineWidth = 5; g.stroke(); g.globalAlpha = 0.6; g.lineWidth = 2; g.stroke();
+  lines(); g.globalAlpha = 0.22; g.lineWidth = 4; g.stroke(); g.globalAlpha = 0.55; g.lineWidth = 2; g.stroke();
   g.restore();
   g.strokeStyle = '#effcff'; g.lineWidth = 1; lines(); g.stroke();
   if (tips.length) {                                                // lightning crackling at the tips as they grow
     const bolts = [], fq = Math.floor(t * 10);
     tips.forEach(([x0, y0], i) => {
       let x = ox + x0, y = oy + y0, h = Math.atan2(y0, x0) + (hash2(fq, i, 241) - 0.5) * 1.4;
-      const ln = [[x, y]], st = 5 + hash2(fq, i, 242) * 7;
+      const ln = [[x, y]], st = 4 + hash2(fq, i, 242) * 6;
       for (let s = 0; s < 4; s++) { h += (hash2(fq * 7 + s, i, 243) - 0.5) * 1.3; x += Math.cos(h) * st; y += Math.sin(h) * st; ln.push([x, y]); }
       bolts.push([ln, 1900 + i, true]);
     });
     drawBolts(bolts, 0, 0, CYAN_BOLTS, 0.9);
   }
-  // 5) each one shrinks away (falling into the dark), drops and spins
+  // 4) SUCKED IN: each shard flies toward the hole — slowly at first, then
+  //    faster (e = u squared) — spinning and shrinking until it's gone
   for (const c of Wb.cells) {
     const u = (t - c.fall) / DIMQ.fallDur; if (u < 0 || u >= 1) continue;
     let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;                  // its box on the screen (only that part gets copied)
     for (const [px, py] of c.poly) { x0 = Math.min(x0, ox + px); y0 = Math.min(y0, oy + py); x1 = Math.max(x1, ox + px); y1 = Math.max(y1, oy + py); }
     x0 = Math.max(0, Math.floor(x0)); y0 = Math.max(0, Math.floor(y0)); x1 = Math.min(W, Math.ceil(x1)); y1 = Math.min(H, Math.ceil(y1));
     if (x1 <= x0 || y1 <= y0) continue;
-    const sc = 1 - 0.8 * u * u, mx = ox + c.cx, my = oy + c.cy;
+    const e = u * u, sc = 1 - 0.85 * e, mx = ox + c.cx, my = oy + c.cy;
     g.save();
-    g.translate(mx + c.vx * u, my + c.vy * u + 170 * u * u); g.rotate(c.spin * u * u); g.scale(sc, sc); g.translate(-mx, -my);
+    g.translate(mx - c.cx * e * 0.95, my - c.cy * e * 0.95); g.rotate(c.spin * e); g.scale(sc, sc); g.translate(-mx, -my);
     g.beginPath(); c.poly.forEach(([x, y], k) => k ? g.lineTo(ox + x, oy + y) : g.moveTo(ox + x, oy + y)); g.closePath();
     g.save(); g.clip(); g.drawImage(scratch, x0, y0, x1 - x0, y1 - y0, x0, y0, x1 - x0, y1 - y0); g.restore();
-    g.strokeStyle = '#bff3ff'; g.lineWidth = 1 / sc; g.stroke();   // its glassy edge catching the light
+    g.strokeStyle = '#bff3ff'; g.lineWidth = 1 / sc; g.stroke();   // its sharp glassy edge catching the light
     g.restore();
   }
-}
-
-// the crack in the middle: a jagged pitch-black lens with thin side cracks,
-// a glowing cyan edge and lightning crackling off it (the glow fades once
-// the spreading cracks take over)
-function drawCrackLens(C, ox, oy, t) {
-  const [L, fat] = crackSize(t), ca = Math.cos(C.a), sa = Math.sin(C.a);
-  const P = (lx, ly) => [ox + lx * ca - ly * sa, oy + lx * sa + ly * ca];   // turn the crack's own (along, across) into screen spots
-  const rim = 1 - smoothstep(clamp((t - DIMQ.open) / 3, 0, 1));
-  const trace = () => {
+  // 5) THE WIND: thin streaks, longer the faster they go (like motion blur),
+  //    swirling into the hole. Drawn in two brightnesses, each as ONE path.
+  g.save(); g.globalCompositeOperation = 'lighter'; g.strokeStyle = '#d9f3ff'; g.lineWidth = 1;
+  for (const bright of [false, true]) {
     g.beginPath();
-    C.top.forEach(([u, v], i) => { const [x, y] = P(u * L, v * L * fat); i ? g.lineTo(x, y) : g.moveTo(x, y); });
-    for (let i = C.bot.length - 1; i >= 0; i--) { const [u, v] = C.bot[i], [x, y] = P(u * L, v * L * fat); g.lineTo(x, y); }
-    g.closePath();
-  };
-  // the side cracks: thin black wedges splitting off the edge
-  const wedge = b => {
-    let lx = b.base[0] * L, ly = b.base[1] * L * fat * 0.9, a = b.a;
-    const left = [], right = [], seg = b.len * L / b.n;
-    for (let i = 0; i <= b.n; i++) {
-      const w = b.w * L * (1 - i / b.n);
-      left.push(P(lx - Math.sin(a) * w, ly + Math.cos(a) * w)); right.push(P(lx + Math.sin(a) * w, ly - Math.cos(a) * w));
-      a += b.turns[i]; lx += Math.cos(a) * seg; ly += Math.sin(a) * seg;
+    for (const w of D.wind) {
+      if (w.b !== bright) continue;
+      const len = Math.min(w.v * 0.07, 34), ta = w.a - w.sw * len / Math.max(w.r, 25);   // the tail: further out and a bit "behind" in the swirl
+      g.moveTo(ox + Math.cos(w.a) * w.r, oy + Math.sin(w.a) * w.r);
+      g.lineTo(ox + Math.cos(ta) * (w.r + len), oy + Math.sin(ta) * (w.r + len));
     }
-    g.beginPath(); left.forEach(([x, y], i) => i ? g.lineTo(x, y) : g.moveTo(x, y));
-    for (let i = right.length - 1; i >= 0; i--) g.lineTo(right[i][0], right[i][1]);
-    g.closePath();
-  };
-  // 1) the glowing edge (wide soft + narrow bright), under the black
-  g.save(); g.globalCompositeOperation = 'lighter'; g.lineJoin = 'round'; g.strokeStyle = '#35c8ff';
-  if (rim > 0.01) {
-    trace(); g.globalAlpha = 0.22 * rim; g.lineWidth = 10; g.stroke(); g.globalAlpha = 0.6 * rim; g.lineWidth = 3; g.stroke();
-    for (const b of C.br) { wedge(b); g.globalAlpha = 0.5 * rim; g.lineWidth = 3; g.stroke(); }
+    g.globalAlpha = bright ? 0.55 : 0.22; g.stroke();
   }
   g.restore();
-  // 2) PITCH BLACK
-  g.fillStyle = '#000';
-  trace(); g.fill();
-  for (const b of C.br) { wedge(b); g.fill(); }
-  // 3) a thin white-hot line right on the edge
-  if (rim > 0.01) { g.save(); g.globalAlpha = rim; g.strokeStyle = '#effcff'; g.lineWidth = 1; trace(); g.stroke(); g.restore(); }
-  // 4) lightning crackling off its edge
-  if (rim > 0.05) {
-    const bolts = [], fq = Math.floor(t * 8);
-    for (let i = 0; i < 6; i++) {
-      const pick = hash2(fq, i, 231) < 0.5 ? C.top : C.bot, [u, v] = pick[1 + ((hash2(fq, i, 232) * (pick.length - 2)) | 0)];
-      let [x, y] = P(u * L, v * L * fat), h = Math.atan2(y - oy, x - ox);
-      const ln = [[x, y]], st = 6 + hash2(fq, i, 233) * 10;
-      for (let s = 0; s < 5; s++) { h += (hash2(fq * 7 + s, i, 234) - 0.5) * 1.2; x += Math.cos(h) * st; y += Math.sin(h) * st; ln.push([x, y]); }
-      bolts.push([ln, 1800 + i, true]);
-    }
-    drawBolts(bolts, 0, 0, CYAN_BOLTS, rim);
-  }
 }
 
 // white flashes over everything (a dot touched, the explosion)
