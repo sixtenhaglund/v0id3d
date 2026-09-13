@@ -50,7 +50,7 @@ const CFG = {
   testStartCarried: 0,
   portalChance: 0.2,      // the blue portal shows up in 1 of every 5 areas
   pureRange: 190,         // how far (pixels) the portal's reach goes: calm, slowing, pulling
-  portalPull: 70,         // how hard The Portal drags you in (strong now — but you can still walk back out, slowly)
+  portalPull: 110,        // how hard The Portal sucks you in (far out you can still walk away; closer than ~60 px it has you)
   maxHp: 100,             // your health
   nodeDamage: 8,          // walking into a node connection
   hitCooldown: 0.9,       // after a hit you can't be hit again for this long (seconds)
@@ -73,7 +73,7 @@ const CFG = {
 //  reloads into the new version. build-site.js stamps a real number in here
 //  for the website; 'dev' (your own copy) never checks.
 // =====================================================================
-const BUILD_ID = '20260913153531';
+const BUILD_ID = '20260913154632';
 function checkForUpdate(then = null, resume = null) {
   if (BUILD_ID === 'dev' || location.protocol === 'file:') { if (then) then(); return; }
   if (S.checking) return;
@@ -688,6 +688,14 @@ function bell(f, vol, dur, pan = 0, delay = 0, dry = 0.35) {
     o.connect(gn).connect(p); o.start(t); o.stop(t + d + 0.05);
   });
 }
+// a SMOOTH fade: the volume follows a smoothstep curve (slow start, slow end)
+// instead of a straight line, so it melts away instead of dropping off.
+// (setValueCurveAtTime plays a list of values over a stretch of time)
+function smoothFade(param, from, to, t0, dur) {
+  const n = 64, c = new Float32Array(n);
+  for (let i = 0; i < n; i++) { const u = i / (n - 1); c[i] = from + (to - from) * u * u * (3 - 2 * u); }
+  param.setValueCurveAtTime(c, t0, Math.max(0.05, dur));
+}
 // a noise source with its own filter + volume envelope (points = [[time, volume], ...])
 function noiseEnv(t, type, f0, f1, dur, pts, q = 0.7, dest = null) {
   const ctx = AU.ctx, s = ctx.createBufferSource(); s.buffer = AU.noise; s.loop = true;
@@ -908,7 +916,8 @@ const SFX = {
       og.gain.value = 0.05; o.connect(og).connect(lp); o.start(t); o.stop(t + Z + 0.1);
     }
     // 3)
-    noiseEnv(t, 'bandpass', 180, 5000, W1, [[W1 * 0.6, 0.06], [W1, 0.2], [W1 + 0.4, 0]], 1.2, vs);
+    const wind = noiseEnv(t, 'bandpass', 180, 5000, W1 + 3, [[W1 * 0.6, 0.06], [W1, 0.2]], 1.2, vs);
+    smoothFade(wind.gain, 0.2, 0, t + W1 + 0.01, 3);                      // (it dies away smoothly as everything shrinks into the dot)
     // 4) + 5)
     for (const d of [0.05, 5, 9, 12, 14.4, 16, 17.1]) thump(0.3 + d / W1 * 0.4, 95, 30, 1.4, d);
     thump(0.95, 70, 20, 4, W1);
@@ -1039,18 +1048,21 @@ const SFX = {
   crackOpen(dur) {
     const ctx = AU.ctx; if (!ctx) return;
     const t = ctx.currentTime;
-    noiseEnv(t, 'lowpass', 110, 500, dur, [[dur * 0.5, 0.18], [dur - 0.05, 0.55], [dur, 0]], 1);
-    const wEnd = Math.max(3, dur - 3.2);                        // (from here the wind dies down, smoothly, until just before the end)
-    noiseEnv(t, 'bandpass', 3500, 140, dur, [[dur * 0.4, 0.04], [wEnd, 0.22], [dur - 0.6, 0]], 1.5);
+    // (everything grows until wEnd, then FADES AWAY smoothly — nothing cuts off)
+    const wEnd = Math.max(3, dur - 3.2), fEnd = dur - 0.4;
+    const rumble = noiseEnv(t, 'lowpass', 110, 500, dur, [[dur * 0.5, 0.18], [wEnd, 0.4]], 1);
+    smoothFade(rumble.gain, 0.4, 0, t + wEnd + 0.01, fEnd - wEnd);
+    const suck = noiseEnv(t, 'bandpass', 3500, 140, dur, [[dur * 0.4, 0.04], [wEnd, 0.22]], 1.5);
+    smoothFade(suck.gain, 0.22, 0, t + wEnd + 0.01, fEnd - wEnd);
     const o = ctx.createOscillator(), gn = ctx.createGain();
     o.frequency.setValueAtTime(34, t); o.frequency.exponentialRampToValueAtTime(22, t + dur);
-    gn.gain.setValueAtTime(0, t); gn.gain.linearRampToValueAtTime(0.5, t + dur - 0.05); gn.gain.linearRampToValueAtTime(0, t + dur);
+    gn.gain.setValueAtTime(0, t); gn.gain.linearRampToValueAtTime(0.5, t + wEnd); smoothFade(gn.gain, 0.5, 0, t + wEnd + 0.01, fEnd - wEnd);
     o.connect(gn).connect(AU.master); o.start(t); o.stop(t + dur + 0.1);
     // THE WIND rushing into the hole: noise through a filter that wanders,
     // with GUSTS (two slow waves wobbling its volume), plus a thin whistle
     // (a very narrow filter = one "note" of noise). Grows until the very end.
     const env = ctx.createGain(); env.gain.setValueAtTime(0, t);
-    env.gain.linearRampToValueAtTime(0.16, t + 2.5); env.gain.linearRampToValueAtTime(0.3, t + wEnd); env.gain.linearRampToValueAtTime(0, t + dur - 0.6);
+    env.gain.linearRampToValueAtTime(0.16, t + 2.5); env.gain.linearRampToValueAtTime(0.3, t + wEnd); smoothFade(env.gain, 0.3, 0, t + wEnd + 0.01, fEnd - wEnd);
     env.connect(AU.master); const ev = ctx.createGain(); ev.gain.value = 0.5; env.connect(ev).connect(AU.verb);
     const gust = ctx.createGain(); gust.gain.value = 1; gust.connect(env);
     for (const [f, a] of [[0.31, 0.35], [0.73, 0.2]]) { const l = ctx.createOscillator(), lg = ctx.createGain(); l.frequency.value = f; lg.gain.value = a; l.connect(lg).connect(gust.gain); l.start(t); l.stop(t + dur + 0.1); }
@@ -1062,7 +1074,7 @@ const SFX = {
       n.connect(bp).connect(ng).connect(gust); n.start(t); l.start(t); n.stop(t + dur + 0.1); l.stop(t + dur + 0.1);
     }
     if (AU.dim) { AU.dim.gain.cancelScheduledValues(t); AU.dim.gain.setValueAtTime(AU.dim.gain.value, t); AU.dim.gain.linearRampToValueAtTime(0, t + dur * 0.85); }
-    thump(0.6, 60, 20, 3, dur);                                  // the very last sound, as it all goes black
+    thump(0.4, 60, 20, 3.5, dur);                                // the very last sound, a soft deep boom, as it all goes black
   },
   // DASH: a quick airy whoosh + a little zip
   dash() {
@@ -2151,8 +2163,8 @@ function update(dt) {
     S.warpT += dt;
     if (S.mode === 'warping') {
       S.core = Math.min(1, S.core + dt * CORE_SPEED);  // (the portal's edges keep creeping in)
-      // you're NOT pulled anywhere — you can still move, but you get slower
-      // and slower until you can't move at all (squared = the slowing speeds up)
+      // you can still move a little, but you get slower and slower until you
+      // can't move at all (squared = the slowing speeds up)
       const left = Math.pow(Math.max(0, 1 - S.warpT / WARP.slow), 2);
       let ix = 0, iy = 0;
       if (keys.a || keys.arrowleft) ix--;
@@ -2162,6 +2174,9 @@ function update(dt) {
       const il = Math.hypot(ix, iy) || 1, sp = CFG.playerSpeed * 0.35 * left, acc = 1 - Math.exp(-dt * 6);
       player.vx += (ix / il * sp - player.vx) * acc; player.vy += (iy / il * sp - player.vy) * acc;
       player.x += player.vx * dt; player.y += player.vy * dt;
+      // ...and The Portal keeps pulling you smoothly into its exact middle
+      const pc = 1 - Math.exp(-dt * 2);
+      player.x += (world.portal.x - player.x) * pc; player.y += (world.portal.y - player.y) * pc;
       const e = 1 - Math.exp(-dt * 3);
       cam.x += (player.x - cam.x) * e; cam.y += (player.y - cam.y) * e;
       if (S.warpT >= WARP.end) S.mode = 'beyond';
@@ -2266,11 +2281,12 @@ function updatePlay(dt, k) {
   const P = world.portal;
   if (P) {
     const dx = P.x - player.x, dy = P.y - player.y, d = Math.hypot(dx, dy);
-    if (d < CFG.pureRange && d > 0) {
-      // (the pull fades out right at the rim: it drags you TO the portal but
-      // never into its middle — you only get taken if you walk in yourself.
-      // Before, standing still near it could drag you all the way in)
-      const pull = Math.pow(1 - d / CFG.pureRange, 2) * CFG.portalPull * clamp((d - 40) / 30, 0, 1);
+    if (d < CFG.pureRange && d > 0.5) {
+      // it SUCKS YOU IN — harder and harder the closer you get — all the way
+      // to its exact middle, and holds you there. (Right at the middle the pull
+      // turns into "3x the distance that's left", so you slide to a stop IN the
+      // centre instead of overshooting and wobbling back and forth.)
+      const pull = Math.min(d * 3, Math.pow(1 - d / CFG.pureRange, 1.6) * CFG.portalPull);
       player.x += dx / d * pull * dt; player.y += dy / d * pull * dt;
     }
     // right in the MIDDLE: your screen's edges fill with portal energy.
