@@ -73,7 +73,7 @@ const CFG = {
 //  reloads into the new version. build-site.js stamps a real number in here
 //  for the website; 'dev' (your own copy) never checks.
 // =====================================================================
-const BUILD_ID = '20260913114650';
+const BUILD_ID = '20260913141937';
 function checkForUpdate(then = null, resume = null) {
   if (BUILD_ID === 'dev' || location.protocol === 'file:') { if (then) then(); return; }
   if (S.checking) return;
@@ -1027,6 +1027,11 @@ const SFX = {
     for (let i = 0; i < 22; i++) burst(rr(0.01, 0.05), rr(0.1, 0.25), rr(2000, 9000), 4, false, rr(-1, 1), 0, rr(0, 1.6));
     for (const [f, d] of [[880, 0.15], [1174.7, 0.3], [1318.5, 0.5], [1760, 0.7], [587.3, 0.9]]) bell(f, 0.03, 6, rr(-0.7, 0.7), d, 0.2);
     for (const f of [73.42, 110, 146.8]) bell(f, 0.05, 8, 0, 0.05, 0.4);
+  },
+  // a piece of reality breaking off: a small glassy crack + a faint "tink"
+  glassBit(pan = 0) {
+    burst(rr(0.02, 0.05), rr(0.05, 0.1), rr(3000, 9000), 5, false, pan);
+    bell(rr(1400, 3200), 0.006, 0.9, pan, 0, 0.3);
   },
   // THE CRACK OPENS and swallows everything (dur seconds): a deep rumble and
   // a sucking wind that both grow and grow... the dimension's sound fades
@@ -3599,7 +3604,8 @@ const DIMQ = {
   hold: 1.6,       // how long you have to hold E
   boom: 1.6,       // the explosion, before the crack opens
   open: 0.9,       // the crack tearing open...
-  grow: 9,         // ...then growing, until everything is black
+  spread: 9,       // ...then cracks spreading out across everything (seconds until they reach the far edges)
+  fallDur: 1.3,    // how long a broken-off piece takes to fall away
 };
 const GLOW_CYAN = makeSoftDot(70, 210, 255, 128);                 // a cyan glow, for the Rift
 const CYAN_BOLTS = { glow: '#35c8ff', core: '#effcff', spr: GLOW_CYAN };
@@ -3637,20 +3643,20 @@ function dimBurst(x, y, n, speed, cols, tri = false) {
 function makeRealityRift() {
   const spot = dimSpot(120), bolts = [], tris = [];
   const nb = ri(5, 7);
-  for (let i = 0; i < nb; i++) {
+  for (let i = 0; i < nb; i++) {                                    // LONG lightning cracks reaching far out
     let a = i / nb * 6.283 + rr(-0.4, 0.4), x = 0, y = 0;
-    const ln = [[0, 0]], len = rr(30, 62), n = 7;
-    for (let s = 0; s < n; s++) { a += rr(-0.55, 0.55); x += Math.cos(a) * len / n; y += Math.sin(a) * len / n; ln.push([x, y]); }
+    const ln = [[0, 0]], len = rr(70, 125), n = 11;
+    for (let s = 0; s < n; s++) { a += rr(-0.5, 0.5); x += Math.cos(a) * len / n; y += Math.sin(a) * len / n; ln.push([x, y]); }
     bolts.push(ln);
-    if (rnd() < 0.7) {                                              // a side branch splitting off it
-      const k = ri(2, n - 2); let [bx, by] = ln[k], ba = a + (rnd() < 0.5 ? 1 : -1) * rr(0.6, 1.1);
-      const br = [[bx, by]];
-      for (let s = 0; s < 4; s++) { ba += rr(-0.5, 0.5); bx += Math.cos(ba) * len * 0.1; by += Math.sin(ba) * len * 0.1; br.push([bx, by]); }
+    for (let b = 0, nbr = ri(1, 2); b < nbr; b++) {                // side branches splitting off it
+      const k = ri(2, n - 3); let [bx, by] = ln[k], ba = a + (rnd() < 0.5 ? 1 : -1) * rr(0.6, 1.1);
+      const br = [[bx, by]], bl = len * rr(0.25, 0.45);
+      for (let s = 0; s < 5; s++) { ba += rr(-0.5, 0.5); bx += Math.cos(ba) * bl / 5; by += Math.sin(ba) * bl / 5; br.push([bx, by]); }
       bolts.push(br);
     }
   }
-  for (let i = 0; i < 18; i++)
-    tris.push({ a: rnd() * 6.283, r: rr(26, 100), w: rr(-0.25, 0.25), rot: rnd() * 6.283, spin: rr(-1.5, 1.5), s: rr(2, 4.5), light: rnd() < 0.5, bob: rnd() * 6.283 });
+  for (let i = 0; i < 22; i++)
+    tris.push({ a: rnd() * 6.283, r: rr(26, 130), w: rr(-0.25, 0.25), rot: rnd() * 6.283, spin: rr(-1.5, 1.5), s: rr(2, 4.5), light: rnd() < 0.5, bob: rnd() * 6.283 });
   return { ...spot, t: 0, bolts, tris };
 }
 
@@ -3669,17 +3675,45 @@ function makeCrack(x, y) {
     for (let s = 0; s <= bn; s++) turns.push(rr(-0.5, 0.5));
     br.push({ base: (side > 0 ? top : bot)[k], a: side * (Math.PI / 2 + rr(-0.8, 0.8)), len: rr(0.25, 0.6), w: rr(0.02, 0.05), n: bn, turns });
   }
-  return { x, y, a: rnd() * Math.PI, top, bot, br };
+  return { x, y, a: rnd() * Math.PI, top, bot, br, web: makeCrackWeb() };
 }
-// how big the crack is at time ct: [L = half its length in pixels, fat = how wide]
+// how big the crack is at time ct: [L = half its length in pixels, fat = how wide].
+// It TEARS open (overshooting a little) and then stays that size — it's the
+// cracks around it that spread (see makeCrackWeb)
 function crackSize(ct) {
-  if (ct < DIMQ.open) {                                             // it TEARS open (and overshoots a little)
-    const u = ct / DIMQ.open - 1, back = 1 + 2.70158 * u * u * u + 1.70158 * u * u;
-    return [48 * back, 0.13];
+  if (ct >= DIMQ.open) return [48, 0.13];
+  const u = ct / DIMQ.open - 1, back = 1 + 2.70158 * u * u * u + 1.70158 * u * u;
+  return [48 * back, 0.13];
+}
+
+// THE CRACKS SPREAD, LIKE BREAKING GLASS: a spiderweb around the crack —
+// cracks shooting OUT from it, and rings going AROUND it. Where they cross
+// they cut everything into pieces ("cells"). The cracks grow outward; once a
+// piece is cracked all the way around, it breaks off and falls away...
+// and behind it there's nothing. Pitch black. (Positions are relative to the
+// crack's middle.)
+// (the cracks spread out to 480 px — just past the screen's corners, which
+// are ~370 px from the middle. Pieces further out than that break off at the
+// very end, together with the last ones you can see.)
+const webReach = ct => ct < DIMQ.open ? 0 : 24 + 456 * Math.pow(Math.min(1, (ct - DIMQ.open) / DIMQ.spread), 1.5);   // how far the cracks have spread (slow, then faster)
+const webTime = r => DIMQ.open + DIMQ.spread * Math.pow(clamp((r - 24) / 456, 0, 1), 1 / 1.5);                        // ...and WHEN they reach distance r
+function makeCrackWeb() {
+  const N = ri(12, 16), rings = [0, 16, 34, 58, 90, 132, 186, 256, 346, 460, 600, 780], a0 = rnd() * 6.283, rad = [];
+  for (let i = 0; i < N; i++) {                                     // each crack going out = a wobbly line of points
+    const a = a0 + (i + rr(-0.3, 0.3)) / N * 6.283, pts = [];
+    for (let j = 0; j < rings.length; j++) { const r = rings[j] * rr(0.85, 1.15), aj = a + rr(-0.1, 0.1); pts.push([Math.cos(aj) * r, Math.sin(aj) * r]); }
+    rad.push(pts);
   }
-  const gr = clamp((ct - DIMQ.open) / DIMQ.grow, 0, 1);
-  // then it grows... slowly at first, then faster and faster, and gets fatter until it's round
-  return [48 * Math.pow(W * 1.8 / 48, Math.pow(gr, 1.4)), lerp(0.13, 1.3, smoothstep(gr))];
+  const cells = [];
+  for (let i = 0; i < N; i++) for (let j = 0; j < rings.length - 1; j++) {
+    const A = rad[i], B = rad[(i + 1) % N], poly = [A[j], A[j + 1], B[j + 1], B[j]];   // the piece between two cracks and two rings
+    const cx = poly.reduce((s, p) => s + p[0], 0) / 4, cy = poly.reduce((s, p) => s + p[1], 0) / 4;
+    // it breaks off a moment after the cracks around it are complete (the middle ones right away)
+    const fall = j === 0 ? DIMQ.open * 0.6 : webTime(rings[j + 1]) + rr(0.15, 1.3);
+    cells.push({ poly, cx, cy, i, j, fall, vx: rr(-30, 30), vy: rr(-25, 5), spin: rr(-2.2, 2.2), started: false });
+  }
+  const end = Math.max(...cells.map(c => c.fall)) + DIMQ.fallDur;   // when the very last piece is gone
+  return { N, rings, rad, cells, end };
 }
 
 function updateDimPath(dt) {
@@ -3729,7 +3763,7 @@ function updateDimPath(dt) {
     }
   } else if (D.phase === 'boom') {
     D.t2 += dt;
-    if (D.t2 >= DIMQ.boom) { D.phase = 'crack'; D.ct = 0; D.crack = makeCrack(D.rift.x, D.rift.y); SFX.crackOpen(DIMQ.open + DIMQ.grow); }
+    if (D.t2 >= DIMQ.boom) { D.phase = 'crack'; D.ct = 0; D.crack = makeCrack(D.rift.x, D.rift.y); SFX.crackOpen(D.crack.web.end); }
   } else if (D.phase === 'crack') {
     D.ct += dt;
     // IT SUCKS YOU IN: a pull toward its middle that keeps getting stronger
@@ -3738,14 +3772,19 @@ function updateDimPath(dt) {
     const pull = 1 - dimControl(), sp = Math.min(dist * 2.2, 30 + D.ct * 35);
     const tvx = dist > 0.5 ? dx / dist * sp : 0, tvy = dist > 0.5 ? dy / dist * sp : 0, k = pull * Math.min(1, dt * 6);
     D.vx += (tvx - D.vx) * k; D.vy += (tvy - D.vy) * k;
-    // starlight streaming into it from all around
-    const [L, fat] = crackSize(D.ct), R0 = Math.max(L * fat, 10);
-    if (R0 < W) for (let i = 0; i < 3; i++) {
-      const a = rnd() * 6.283, r = R0 + rr(20, 170), v = rr(80, 200);
-      D.fx.push({ x: C.x + Math.cos(a) * r, y: C.y + Math.sin(a) * r, vx: -Math.cos(a) * v, vy: -Math.sin(a) * v, life: (r - R0 * 0.8) / v, max: 0.8,
+    // starlight streaming into the hole in its middle (while there's still starlight left)
+    const R0 = 14;
+    if (D.ct < C.web.end * 0.6) for (let i = 0; i < 2; i++) {
+      const a = rnd() * 6.283, r = R0 + rr(20, 150), v = rr(80, 200);
+      D.fx.push({ x: C.x + Math.cos(a) * r, y: C.y + Math.sin(a) * r, vx: -Math.cos(a) * v, vy: -Math.sin(a) * v, life: (r - R0) / v, max: 0.8,
                   col: ['#fff', '#cfdcff', '#8fe6ff', '#b08cff'][ri(0, 3)], s: 1, tri: false, rot: 0, spin: 0, sink: true });
     }
-    if (D.ct >= DIMQ.open + DIMQ.grow) { D.phase = 'void'; D.fx = []; D.rings = []; }   // it's all black now
+    // a piece breaking off: sometimes a little glass "tink" (not every one — there are 150+)
+    for (const c of C.web.cells) if (!c.started && D.ct >= c.fall) {
+      c.started = true;
+      if (c.j > 0 && rnd() < 0.3) SFX.glassBit(clamp((C.x + c.cx - yx) / 250, -1, 1));
+    }
+    if (D.ct >= C.web.end) { D.phase = 'void'; D.fx = []; D.rings = []; }            // the last piece is gone: it's all black now
   }
 }
 
@@ -3873,15 +3912,82 @@ function drawDimPath(cx, cy) {
   g.restore();
 }
 
-// THE CRACK: pitch black, with a glowing cyan edge (that fades as it grows)
-// and lightning crackling along it. Drawn AFTER the bloom so it stays black.
+// THE CRACK. Drawn AFTER the bloom so its black stays pitch black.
+//  1) a copy of the picture right now (falling pieces carry their bit of it)
+//  2) where pieces have broken off: nothing — pitch black
+//  3) the crack in the middle, with its glowing edge
+//  4) the spreading cracks (glowing cyan, white-hot in the middle), with
+//     lightning at their tips
+//  5) the pieces that are falling away right now
 function drawDimCrack(cx, cy) {
   const D = S.dim; if (D.phase !== 'crack') return;
-  const C = D.crack, [L, fat] = crackSize(D.ct);
-  const sh = D.ct < DIMQ.open ? 2 : 0;                             // it shakes while it tears open
-  const ox = cx + C.x - D.x + rr(-sh, sh), oy = cy + C.y - D.y + rr(-sh, sh), ca = Math.cos(C.a), sa = Math.sin(C.a);
+  const C = D.crack, Wb = C.web, t = D.ct;
+  const sh = t < DIMQ.open ? 2 : 0;                                // it shakes while it tears open
+  const ox = cx + C.x - D.x + rr(-sh, sh), oy = cy + C.y - D.y + rr(-sh, sh);
+  const NR = Wb.rings.length - 1, cell = (i, j) => Wb.cells[((i + Wb.N) % Wb.N) * NR + j], gone = c => t >= c.fall;
+  // 1)
+  sg.globalCompositeOperation = 'copy'; sg.drawImage(cv, 0, 0); sg.globalCompositeOperation = 'source-over';
+  // 2) (all the holes in ONE path, so there are no thin seams between neighbouring pieces)
+  g.fillStyle = '#000'; g.beginPath();
+  for (const c of Wb.cells) if (gone(c)) { c.poly.forEach(([x, y], k) => k ? g.lineTo(ox + x, oy + y) : g.moveTo(ox + x, oy + y)); g.closePath(); }
+  g.fill();
+  // 3)
+  drawCrackLens(C, ox, oy, t);
+  // 4)
+  const R = webReach(t), seg = [], tips = [];
+  for (let i = 0; i < Wb.N; i++) {
+    const P = Wb.rad[i], Q = Wb.rad[(i + 1) % Wb.N];
+    for (let j = 0; j < NR; j++) {
+      if (Wb.rings[j] >= R) break;
+      // (a crack between two pieces that have BOTH fallen is gone — no lines floating in the black)
+      if (!gone(cell(i - 1, j)) || !gone(cell(i, j))) {
+        const f = Math.min(1, (R - Wb.rings[j]) / (Wb.rings[j + 1] - Wb.rings[j]));      // still growing?
+        const e = [lerp(P[j][0], P[j + 1][0], f), lerp(P[j][1], P[j + 1][1], f)];
+        seg.push([P[j], e]); if (f < 1) tips.push(e);
+      }
+      const rf = j > 0 ? clamp((R - Wb.rings[j] * 1.3) / (Wb.rings[j] * 0.4 + 10), 0, 1) : 0;   // the rings crack a bit later
+      if (rf > 0 && (!gone(cell(i, j - 1)) || !gone(cell(i, j)))) seg.push([P[j], [lerp(P[j][0], Q[j][0], rf), lerp(P[j][1], Q[j][1], rf)]]);
+    }
+  }
+  const lines = () => { g.beginPath(); for (const [a, b] of seg) { g.moveTo(ox + a[0], oy + a[1]); g.lineTo(ox + b[0], oy + b[1]); } };
+  g.save(); g.globalCompositeOperation = 'lighter'; g.strokeStyle = '#35c8ff'; g.lineCap = 'round';
+  lines(); g.globalAlpha = 0.25; g.lineWidth = 5; g.stroke(); g.globalAlpha = 0.6; g.lineWidth = 2; g.stroke();
+  g.restore();
+  g.strokeStyle = '#effcff'; g.lineWidth = 1; lines(); g.stroke();
+  if (tips.length) {                                                // lightning crackling at the tips as they grow
+    const bolts = [], fq = Math.floor(t * 10);
+    tips.forEach(([x0, y0], i) => {
+      let x = ox + x0, y = oy + y0, h = Math.atan2(y0, x0) + (hash2(fq, i, 241) - 0.5) * 1.4;
+      const ln = [[x, y]], st = 5 + hash2(fq, i, 242) * 7;
+      for (let s = 0; s < 4; s++) { h += (hash2(fq * 7 + s, i, 243) - 0.5) * 1.3; x += Math.cos(h) * st; y += Math.sin(h) * st; ln.push([x, y]); }
+      bolts.push([ln, 1900 + i, true]);
+    });
+    drawBolts(bolts, 0, 0, CYAN_BOLTS, 0.9);
+  }
+  // 5) each one shrinks away (falling into the dark), drops and spins
+  for (const c of Wb.cells) {
+    const u = (t - c.fall) / DIMQ.fallDur; if (u < 0 || u >= 1) continue;
+    let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;                  // its box on the screen (only that part gets copied)
+    for (const [px, py] of c.poly) { x0 = Math.min(x0, ox + px); y0 = Math.min(y0, oy + py); x1 = Math.max(x1, ox + px); y1 = Math.max(y1, oy + py); }
+    x0 = Math.max(0, Math.floor(x0)); y0 = Math.max(0, Math.floor(y0)); x1 = Math.min(W, Math.ceil(x1)); y1 = Math.min(H, Math.ceil(y1));
+    if (x1 <= x0 || y1 <= y0) continue;
+    const sc = 1 - 0.8 * u * u, mx = ox + c.cx, my = oy + c.cy;
+    g.save();
+    g.translate(mx + c.vx * u, my + c.vy * u + 170 * u * u); g.rotate(c.spin * u * u); g.scale(sc, sc); g.translate(-mx, -my);
+    g.beginPath(); c.poly.forEach(([x, y], k) => k ? g.lineTo(ox + x, oy + y) : g.moveTo(ox + x, oy + y)); g.closePath();
+    g.save(); g.clip(); g.drawImage(scratch, x0, y0, x1 - x0, y1 - y0, x0, y0, x1 - x0, y1 - y0); g.restore();
+    g.strokeStyle = '#bff3ff'; g.lineWidth = 1 / sc; g.stroke();   // its glassy edge catching the light
+    g.restore();
+  }
+}
+
+// the crack in the middle: a jagged pitch-black lens with thin side cracks,
+// a glowing cyan edge and lightning crackling off it (the glow fades once
+// the spreading cracks take over)
+function drawCrackLens(C, ox, oy, t) {
+  const [L, fat] = crackSize(t), ca = Math.cos(C.a), sa = Math.sin(C.a);
   const P = (lx, ly) => [ox + lx * ca - ly * sa, oy + lx * sa + ly * ca];   // turn the crack's own (along, across) into screen spots
-  const rim = 1 - smoothstep(clamp((D.ct - DIMQ.open) / (DIMQ.grow * 0.75), 0, 1));
+  const rim = 1 - smoothstep(clamp((t - DIMQ.open) / 3, 0, 1));
   const trace = () => {
     g.beginPath();
     C.top.forEach(([u, v], i) => { const [x, y] = P(u * L, v * L * fat); i ? g.lineTo(x, y) : g.moveTo(x, y); });
@@ -3916,7 +4022,7 @@ function drawDimCrack(cx, cy) {
   if (rim > 0.01) { g.save(); g.globalAlpha = rim; g.strokeStyle = '#effcff'; g.lineWidth = 1; trace(); g.stroke(); g.restore(); }
   // 4) lightning crackling off its edge
   if (rim > 0.05) {
-    const bolts = [], fq = Math.floor(D.ct * 8);
+    const bolts = [], fq = Math.floor(t * 8);
     for (let i = 0; i < 6; i++) {
       const pick = hash2(fq, i, 231) < 0.5 ? C.top : C.bot, [u, v] = pick[1 + ((hash2(fq, i, 232) * (pick.length - 2)) | 0)];
       let [x, y] = P(u * L, v * L * fat), h = Math.atan2(y - oy, x - ox);
