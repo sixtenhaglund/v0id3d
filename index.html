@@ -69,7 +69,7 @@ const CFG = {
 //  reloads into the new version. build-site.js stamps a real number in here
 //  for the website; 'dev' (your own copy) never checks.
 // =====================================================================
-const BUILD_ID = '20260912212927';
+const BUILD_ID = '20260913090234';
 function checkForUpdate(then = null, resume = null) {
   if (BUILD_ID === 'dev' || location.protocol === 'file:') { if (then) then(); return; }
   if (S.checking) return;
@@ -2817,24 +2817,32 @@ function drawPortal(camX, camY, pass) {
   g.restore();
 }
 
+// the Portal's window gets painted on its OWN little canvas first. That way we
+// can fade its edge out afterwards (see-through + blurry) before putting it on
+// the screen — cutting it with clip() only ever gives a hard, sharp edge
+const pwin = makeCanvas(8, 8), pwc = pwin.getContext('2d');
+
 function drawPortalInner(sx, sy, RX, RY, T, rim, P) {
-  // 4) THE WINDOW: cut to the rim shape, then paint deep space inside it
-  g.save(); rim(1); g.clip();
-  const bg = g.createRadialGradient(sx, sy, 0, sx, sy, RY * 1.1);
+  // 4) THE WINDOW: deep space, painted around (lx, ly) = the middle of the little canvas
+  const ww = Math.ceil(RX * 2.5) + 4, wh = Math.ceil(RY * 2.5) + 4;
+  if (pwin.width !== ww || pwin.height !== wh) { pwin.width = ww; pwin.height = wh; }
+  const pc = pwc, lx = ww / 2, ly = wh / 2;
+  pc.save(); pc.globalCompositeOperation = 'source-over'; pc.globalAlpha = 1;
+  const bg = pc.createRadialGradient(lx, ly, 0, lx, ly, RY * 1.1);
   bg.addColorStop(0, '#1a1052'); bg.addColorStop(0.55, '#0a0628'); bg.addColorStop(1, '#030110');
-  g.fillStyle = bg; g.fillRect(sx - RX * 1.3, sy - RY * 1.3, RX * 2.6, RY * 2.6);
-  g.globalCompositeOperation = 'lighter';
+  pc.fillStyle = bg; pc.fillRect(0, 0, ww, wh);
+  pc.globalCompositeOperation = 'lighter';
   for (let i = 0; i < 3; i++) {                           // faint, slow nebula clouds
     const a = T * (0.09 + i * 0.04) + i * 2.1, s = RX * (1.1 + i * 0.25);
-    g.globalAlpha = 0.07; g.drawImage(PDOTS[i === 1 ? 4 : 2], sx + Math.cos(a) * RX * 0.45 - s, sy + Math.sin(a) * RY * 0.4 - s, s * 2, s * 2);
+    pc.globalAlpha = 0.07; pc.drawImage(PDOTS[i === 1 ? 4 : 2], lx + Math.cos(a) * RX * 0.45 - s, ly + Math.sin(a) * RY * 0.4 - s, s * 2, s * 2);
   }
   // TUNNEL RINGS: faint ovals that keep shrinking toward the middle, forever —
   // it feels like the portal goes on and on, deep into the distance
-  g.strokeStyle = '#8b6dff'; g.lineWidth = 1;
+  pc.strokeStyle = '#8b6dff'; pc.lineWidth = 1;
   for (let i = 0; i < 6; i++) {
     const k = 1 - ((T * 0.18 + i / 6) % 1);               // 1 = at the rim ... 0 = deep in the middle
-    g.globalAlpha = 0.28 * k * k;
-    g.beginPath(); g.ellipse(sx, sy, RX * k, RY * k, 0, 0, 6.2832); g.stroke();
+    pc.globalAlpha = 0.28 * k * k;
+    pc.beginPath(); pc.ellipse(lx, ly, RX * k, RY * k, 0, 0, 6.2832); pc.stroke();
   }
   // the starfield: 5 layers at different DEPTHS. The deepest layer barely
   // moves when the portal slides across your screen, the nearest moves most —
@@ -2851,66 +2859,48 @@ function drawPortalInner(sx, sy, RX, RY, T, rim, P) {
       for (let j = Math.floor((qy0 - span) / cell); j <= Math.floor((qy0 + span) / cell); j++) {
         const h = hash2(i, j, 300 + L); if (h > 0.6) continue;
         const qx = i * cell + hash2(i, j, 310 + L) * cell, qy = j * cell + hash2(i, j, 320 + L) * cell;
-        const x = sx + offX + qx * c - qy * s, y = sy + offY + qx * s + qy * c;
-        if (Math.abs(x - sx) > RX * 1.2 || Math.abs(y - sy) > RY * 1.2) continue;
+        const x = lx + offX + qx * c - qy * s, y = ly + offY + qx * s + qy * c;
+        if (Math.abs(x - lx) > RX * 1.2 || Math.abs(y - ly) > RY * 1.2) continue;
         const tw = 0.5 + 0.5 * Math.sin(T * (0.8 + h * 3) + h * 40);          // twinkle
         const sz = size * (0.55 + h) * (h < 0.04 ? 2.2 : 1);                 // a few big bright ones
-        g.globalAlpha = (0.3 + 0.7 * tw) * (0.45 + p * 0.7);
-        g.drawImage(PDOTS[(hash2(i, j, 330 + L) * 4) | 0], x - sz, y - sz, sz * 2, sz * 2);
+        pc.globalAlpha = (0.3 + 0.7 * tw) * (0.45 + p * 0.7);
+        pc.drawImage(PDOTS[(hash2(i, j, 330 + L) * 4) | 0], x - sz, y - sz, sz * 2, sz * 2);
       }
   }
-  // darker toward the rim, so the middle feels far away
-  g.globalCompositeOperation = 'source-over'; g.globalAlpha = 1;
-  const vg = g.createRadialGradient(sx, sy, RY * 0.45, sx, sy, RY * 1.05);
-  vg.addColorStop(0, 'rgba(3,1,16,0)'); vg.addColorStop(1, 'rgba(3,1,16,0.85)');
-  g.fillStyle = vg; g.fillRect(sx - RX * 1.3, sy - RY * 1.3, RX * 2.6, RY * 2.6);
   // LIGHTNING flickering across the deep inside: a new bolt ~9 times a second,
   // from one side of the rim to the other, wiggling most in the middle
   const lb = Math.floor(T * 9);
-  g.lineWidth = 1;
+  pc.lineWidth = 1;
   for (let n = 0; n < 2; n++) {
     if (hash2(lb, n, 91) > 0.35) continue;
     const a1 = hash2(lb, n, 92) * 6.283, a2 = a1 + 2 + hash2(lb, n, 93) * 2.3;
-    const x0 = sx + Math.cos(a1) * RX * 0.9, y0 = sy + Math.sin(a1) * RY * 0.9;
-    const x1 = sx + Math.cos(a2) * RX * 0.9, y1 = sy + Math.sin(a2) * RY * 0.9;
+    const x0 = lx + Math.cos(a1) * RX * 0.9, y0 = ly + Math.sin(a1) * RY * 0.9;
+    const x1 = lx + Math.cos(a2) * RX * 0.9, y1 = ly + Math.sin(a2) * RY * 0.9;
     for (const [col, jit] of [['#6b5cff', 1.6], [n ? '#c9b8ff' : '#fff', 1]]) {
-      g.strokeStyle = col; g.beginPath(); g.moveTo(x0, y0);
+      pc.strokeStyle = col; pc.beginPath(); pc.moveTo(x0, y0);
       for (let s = 1; s <= 7; s++) {
         const f = s / 7, wig = (1 - Math.abs(f - 0.5) * 2) * 8 * jit;
-        g.lineTo(lerp(x0, x1, f) + (hash2(lb * 7 + s, n, 94) - 0.5) * wig, lerp(y0, y1, f) + (hash2(lb * 7 + s, n, 95) - 0.5) * wig);
+        pc.lineTo(lerp(x0, x1, f) + (hash2(lb * 7 + s, n, 94) - 0.5) * wig, lerp(y0, y1, f) + (hash2(lb * 7 + s, n, 95) - 0.5) * wig);
       }
-      g.stroke();
+      pc.stroke();
     }
   }
-  g.restore();
+  // THE BLURRY SEE-THROUGH EDGE: 'destination-in' keeps only as much of the
+  // picture as the paint we put on top — solid paint keeps it, see-through
+  // paint makes it see-through. So an oval gradient from solid (middle) to
+  // nothing (edge) makes the window melt away into the void around it.
+  pc.globalCompositeOperation = 'destination-in'; pc.globalAlpha = 1;
+  pc.translate(lx, ly); pc.scale(RX / RY, 1);             // squash a circle into the portal's oval
+  const fade = pc.createRadialGradient(0, 0, RY * 0.35, 0, 0, RY * 1.12);
+  fade.addColorStop(0, 'rgba(0,0,0,1)'); fade.addColorStop(0.5, 'rgba(0,0,0,0.8)'); fade.addColorStop(1, 'rgba(0,0,0,0)');
+  pc.fillStyle = fade; pc.fillRect(-RY * 2, -RY * 2, RY * 4, RY * 4);
+  pc.restore();
+  g.drawImage(pwin, Math.round(sx - lx), Math.round(sy - ly));
 
-  // 5) the rim: a smooth glowing cyan edge, plus a faint second ring outside
-  // TORN EDGES: jagged pieces of the surrounding void hang over the rim. Each
-  // one hangs there for a few seconds... then tears off and falls in,
-  // spinning and shrinking. It shows the real void from where it tore off.
-  for (let i = 0; i < 10; i++) {
-    const a0 = hash2(i, 1, 71) * 6.283;                                 // randomly spaced around the rim
-    const cyc = 3 + hash2(i, 2, 71) * 4, ph = ((T + hash2(i, 3, 71) * cyc) % cyc) / cyc;
-    const fall = ph < 0.72 ? 0 : (ph - 0.72) / 0.28;                  // 0 = hanging on ... 1 = gone in
-    const m = portalShape(a0, T), ex = sx + Math.cos(a0) * RX * m, ey = sy + Math.sin(a0) * RY * m;
-    const x = lerp(ex, sx, fall * 0.85), y = lerp(ey, sy, fall * 0.85);
-    const sc = 1 - fall * 0.85, w = (4 + hash2(i, 4, 71) * 5) * sc, d = (2.5 + hash2(i, 6, 71) * 3) * sc;
-    // a FLAP: wide along the rim, hanging a little way in, with a ragged inner edge.
-    // (tx, ty) = along the rim, (nx, ny) = pointing into the portal
-    const rot = fall * fall * 5, tx = Math.cos(a0 + 1.5708 + rot), ty = Math.sin(a0 + 1.5708 + rot);
-    const nx = -Math.cos(a0 + rot), ny = -Math.sin(a0 + rot);
-    const shape = [[-w, -d * 0.4], [w, -d * 0.4], [w * 0.7, d * (0.6 + hash2(i, 7, 71) * 0.6)], [w * 0.15, d * 0.5], [-w * 0.45, d * (0.8 + hash2(i, 8, 71) * 0.5)]];
-    g.save(); g.beginPath();
-    shape.forEach(([u, v], k) => { const px = x + tx * u + nx * v, py = y + ty * u + ny * v; k ? g.lineTo(px, py) : g.moveTo(px, py); });
-    g.closePath();
-    g.save(); g.clip(); g.drawImage(psnap, Math.round(x - ex - Math.cos(a0) * 4), Math.round(y - ey - Math.sin(a0) * 4)); g.restore();
-    g.globalAlpha = 1 - fall; g.strokeStyle = '#a57bff'; g.lineWidth = 1; g.stroke();
-    g.restore();
-  }
-  glowStroke(() => rim(1), 30, 0.75 + 0.1 * Math.sin(T * 2), '#6a4dff', 7);   // (small rim: 7 layers is plenty)
-  g.save(); g.strokeStyle = '#e4dcff'; g.lineWidth = 1; rim(1); g.stroke();
-  g.globalAlpha = 0.35 + 0.15 * Math.sin(T * 1.6); g.strokeStyle = '#a57bff'; rim(1.16); g.stroke();
-  g.restore();
+  // 5) THE EDGE = LIGHTNING. No solid rim line any more — just arcs of
+  //    electricity crawling around the rim, striking somewhere new every
+  //    split second, plus short sparks jumping off it.
+  drawRimLightning(sx, sy, RX, RY, T);
 
   // 6) motes of light orbiting it on a tilted ring, with little tails
   g.save(); g.globalCompositeOperation = 'lighter';
@@ -2924,6 +2914,41 @@ function drawPortalInner(sx, sy, RX, RY, T, rim, P) {
     }
   }
   g.restore();
+}
+
+// THE PORTAL'S EDGE, made of lightning. Each arc hugs the rim for a random
+// stretch, lives a split second, then strikes again somewhere else — together
+// they draw the portal's outline, but it's never the same twice.
+function drawRimLightning(sx, sy, RX, RY, T) {
+  const bolts = [];
+  for (let i = 0; i < 10; i++) {                        // ARCS along the rim
+    const life = 0.16 + hash2(i, 1, 211) * 0.22;          // each lives 0.16-0.38 s...
+    const sd = Math.floor(T / life + hash2(i, 2, 211)) * 29 + i;   // ...then a new one (new random numbers)
+    const a0 = hash2(sd, 3, 211) * 6.283, span = (0.7 + hash2(sd, 4, 211) * 1.1) * (hash2(sd, 5, 211) < 0.5 ? 1 : -1);
+    const ln = [];
+    for (let s = 0; s <= 9; s++) {
+      const a = a0 + span * s / 9, m = portalShape(a, T) * (1 + (hash2(sd * 11 + s, 6, 211) - 0.5) * 0.24);
+      ln.push([sx + Math.cos(a) * RX * m, sy + Math.sin(a) * RY * m]);
+    }
+    bolts.push([ln, 1400 + i, true]);
+  }
+  for (let i = 0; i < 7; i++) {                         // SPARKS jumping off it (mostly out, some in)
+    const sd = Math.floor(T * 3.5 + i * 0.41) * 37 + i;
+    if (hash2(sd, 1, 213) > 0.65) continue;
+    const a = hash2(sd, 2, 213) * 6.283, m = portalShape(a, T), len = 7 + hash2(sd, 3, 213) * 14;
+    let x = sx + Math.cos(a) * RX * m, y = sy + Math.sin(a) * RY * m, h = a + (hash2(sd, 4, 213) < 0.7 ? 0 : Math.PI);
+    const ln = [[x, y]];
+    for (let s = 0; s < 5; s++) { h += (hash2(sd * 7 + s, 5, 213) - 0.5) * 1.3; x += Math.cos(h) * len / 5; y += Math.sin(h) * len / 5; ln.push([x, y]); }
+    bolts.push([ln, 1450 + i]);
+  }
+  // a soft glow under the bolts (the inside is drawn after the bloom, so it
+  // doesn't glow by itself) — it follows the lightning, not a smooth ring
+  g.save(); g.globalCompositeOperation = 'lighter'; g.strokeStyle = '#5b3dff'; g.lineJoin = 'round';
+  g.beginPath(); for (const [ln] of bolts) ln.forEach(([x, y], i) => i ? g.lineTo(x, y) : g.moveTo(x, y));
+  g.lineWidth = 9; g.globalAlpha = 0.12; g.stroke();
+  g.lineWidth = 5; g.globalAlpha = 0.28; g.stroke();
+  g.restore();
+  drawBolts(bolts, 0, 0, BLUE_BOLTS);
 }
 
 // SMOOTH RANDOM: a random value at every whole step of t, blended smoothly in
