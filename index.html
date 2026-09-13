@@ -73,7 +73,7 @@ const CFG = {
 //  reloads into the new version. build-site.js stamps a real number in here
 //  for the website; 'dev' (your own copy) never checks.
 // =====================================================================
-const BUILD_ID = '20260913143941';
+const BUILD_ID = '20260913153531';
 function checkForUpdate(then = null, resume = null) {
   if (BUILD_ID === 'dev' || location.protocol === 'file:') { if (then) then(); return; }
   if (S.checking) return;
@@ -1040,7 +1040,8 @@ const SFX = {
     const ctx = AU.ctx; if (!ctx) return;
     const t = ctx.currentTime;
     noiseEnv(t, 'lowpass', 110, 500, dur, [[dur * 0.5, 0.18], [dur - 0.05, 0.55], [dur, 0]], 1);
-    noiseEnv(t, 'bandpass', 3500, 140, dur, [[dur * 0.4, 0.04], [dur - 0.05, 0.28], [dur, 0]], 1.5);
+    const wEnd = Math.max(3, dur - 3.2);                        // (from here the wind dies down, smoothly, until just before the end)
+    noiseEnv(t, 'bandpass', 3500, 140, dur, [[dur * 0.4, 0.04], [wEnd, 0.22], [dur - 0.6, 0]], 1.5);
     const o = ctx.createOscillator(), gn = ctx.createGain();
     o.frequency.setValueAtTime(34, t); o.frequency.exponentialRampToValueAtTime(22, t + dur);
     gn.gain.setValueAtTime(0, t); gn.gain.linearRampToValueAtTime(0.5, t + dur - 0.05); gn.gain.linearRampToValueAtTime(0, t + dur);
@@ -1049,7 +1050,7 @@ const SFX = {
     // with GUSTS (two slow waves wobbling its volume), plus a thin whistle
     // (a very narrow filter = one "note" of noise). Grows until the very end.
     const env = ctx.createGain(); env.gain.setValueAtTime(0, t);
-    env.gain.linearRampToValueAtTime(0.16, t + 2.5); env.gain.linearRampToValueAtTime(0.32, t + dur - 0.1); env.gain.linearRampToValueAtTime(0, t + dur);
+    env.gain.linearRampToValueAtTime(0.16, t + 2.5); env.gain.linearRampToValueAtTime(0.3, t + wEnd); env.gain.linearRampToValueAtTime(0, t + dur - 0.6);
     env.connect(AU.master); const ev = ctx.createGain(); ev.gain.value = 0.5; env.connect(ev).connect(AU.verb);
     const gust = ctx.createGain(); gust.gain.value = 1; gust.connect(env);
     for (const [f, a] of [[0.31, 0.35], [0.73, 0.2]]) { const l = ctx.createOscillator(), lg = ctx.createGain(); l.frequency.value = f; lg.gain.value = a; l.connect(lg).connect(gust.gain); l.start(t); l.stop(t + dur + 0.1); }
@@ -1893,7 +1894,7 @@ function startWarp() {
 // the dot has exploded: you're in the star dimension now
 function startStars() {
   S.mode = 'stars'; S.starT = 0;
-  S.dim = { x: 0, y: 0, z: 0, vx: 0, vy: 0 };
+  S.dim = { x: 0, y: 0, z: 0, vx: 0, vy: 0, camX: 0, camY: 0 };   // (x, y = you; camX, camY = what the screen looks at)
   startDimPath();                                  // the bright dots that lead you to the Rift (dimension.js)
   SFX.dimension();
 }
@@ -3474,6 +3475,17 @@ function updateStars(dt) {
   D.vx += (ix / il * 90 * ctl - D.vx) * e; D.vy += (iy / il * 90 * ctl - D.vy) * e;
   updateDimPath(dt);                                                       // the dots, the Rift, the crack (dimension.js) — may pull you
   D.x += D.vx * dt; D.y += D.vy * dt;
+  // THE CAMERA (what the screen is looking at): normally it's glued to you.
+  // But once the Rift explodes it lets go of you and glides over to the Rift
+  // — so you can SEE yourself being pulled into it (if the camera stayed on
+  // you, it would look like the crack was sliding over to you instead)
+  if (D.phase === 'boom' || D.phase === 'crack') {
+    const k = 1 - Math.exp(-dt * 1.8);
+    D.camX += (D.rift.x - D.camX) * k; D.camY += (D.rift.y - D.camY) * k;
+  } else if (D.phase === 'void') {
+    const k = 1 - Math.exp(-dt * 1.5);                                     // (in the black it drifts back onto you)
+    D.camX += (D.x - D.camX) * k; D.camY += (D.y - D.camY) * k;
+  } else { D.camX = D.x; D.camY = D.y; }
   D.z += dt * STAR.speed;
   if ((D.phase === 'dots' || D.phase === 'rift') && rnd() < 0.35 * dt) SFX.starPing();   // a far chime now and then
 }
@@ -3491,8 +3503,8 @@ function drawStarDimension() {
   g.imageSmoothingEnabled = true;                                          // (smooth, or the huge clouds look blocky)
   for (let i = 0; i < 7; i++) {
     const r = 120 + hash2(i, 3, 193) * 160;
-    const nx = cx + (hash2(i, 1, 193) - 0.5) * W * 1.4 - D.x * 0.03 + Math.sin(T * 0.05 + i) * 20;
-    const ny = cy + (hash2(i, 2, 193) - 0.5) * H * 1.4 - D.y * 0.03;
+    const nx = cx + (hash2(i, 1, 193) - 0.5) * W * 1.4 - D.camX * 0.03 + Math.sin(T * 0.05 + i) * 20;
+    const ny = cy + (hash2(i, 2, 193) - 0.5) * H * 1.4 - D.camY * 0.03;
     glowAt(nx, ny, r, r * 0.6, 0.07 + 0.04 * Math.sin(T * 0.2 + i * 2), i % 3 ? GLOW_BLUE : PDOTS[1]);
   }
   g.imageSmoothingEnabled = false;
@@ -3517,7 +3529,7 @@ function drawStarDimension() {
     // into a flat purple fog instead of separate stars
     const keepRaw = 4.5 / (d * d), keep = Math.min(0.72, keepRaw);
     const bright = fade * mix * 1.5 / (1 + d * 0.22), inv = 1 / d, sp = G * inv;
-    const ox = D.x + layerOff(k, 0), oy = D.y + layerOff(k, 1);            // (this layer's own shift)
+    const ox = D.camX + layerOff(k, 0), oy = D.camY + layerOff(k, 1);      // (this layer's own shift)
     const gx0 = Math.ceil((ox - cx * d) / G), gx1 = Math.floor((ox + cx * d) / G);
     const gy0 = Math.ceil((oy - cy * d) / G), gy1 = Math.floor((oy + cy * d) / G);
     const kh = Math.imul(k, 83492791), smooth = d < 5;
@@ -3554,7 +3566,7 @@ function drawStarDimension() {
   g.globalCompositeOperation = 'lighter'; g.drawImage(starC, 0, 0);       // add the stars on top of the clouds
   // 3) the NEAR layers: big glowing stars that slide past you
   for (const [k, d, fade] of near) {
-    const inv = 1 / d, G2 = G, ox = D.x + layerOff(k, 0), oy = D.y + layerOff(k, 1);
+    const inv = 1 / d, G2 = G, ox = D.camX + layerOff(k, 0), oy = D.camY + layerOff(k, 1);
     // look a bit past the screen edges — as far as the biggest glow on this
     // layer reaches — so a glow slides in from the edge instead of popping in
     const mg = 8 + 9 * inv;
@@ -3591,7 +3603,8 @@ function drawStarDimension() {
 // 4) you, floating in the middle — purified: white, with a violet core
 function drawDimYou(cx, cy) {
   const D = S.dim, T = S.starT;
-  const yx = Math.round(cx + D.vx * 0.08), yy = Math.round(cy + D.vy * 0.08 + Math.sin(T * 1.3) * 1.5);
+  // (where you are, compared to where the camera looks)
+  const yx = Math.round(cx + D.x - D.camX + D.vx * 0.08), yy = Math.round(cy + D.y - D.camY + D.vy * 0.08 + Math.sin(T * 1.3) * 1.5);
   glowAt(yx, yy, 22, 22, 0.6, GLOW_BLUE);
   diamond(yx, yy, 5, '#fff'); diamond(yx, yy, 2, '#1a1040'); diamond(yx, yy, 1.2, '#b08cff');
 }
@@ -3762,6 +3775,9 @@ function updateDimPath(dt) {
     if (D.hold >= DIMQ.hold) {                                                    // IT EXPLODES
       D.phase = 'boom'; D.t2 = 0; D.flash = 1;
       SFX.riftBoom();
+      // the blast THROWS YOU BACK a little... (then the crack pulls you in)
+      const bx = yx - R.x, by = yy - R.y, bl = Math.hypot(bx, by) || 1;
+      D.vx += bx / bl * 170; D.vy += by / bl * 170;
       dimBurst(R.x, R.y, 150, 2.2, ['#fff', '#effcff', '#8fe6ff', '#35c8ff', '#b08cff']);
       dimBurst(R.x, R.y, 34, 1.6, ['#dfe9f0', '#9aa9b4'], true);                   // its triangles fly away
       for (const [dl, r, col] of [[0, 170, '#fff'], [0.12, 260, '#8fe6ff'], [0.28, 380, '#b08cff']]) D.rings.push({ x: R.x, y: R.y, t: -dl, dur: 1.3, r, col });
@@ -3781,8 +3797,11 @@ function updateDimPath(dt) {
     // a little (like water down a drain), faster and faster the closer they get.
     // Kept as distance r + angle a from the hole — that makes "toward the
     // middle" simply: make r smaller.
-    const grow = clamp(D.ct / 3, 0, 1);                                         // (it picks up over the first few seconds)
-    if (D.ct < C.web.end - 0.6) for (let i = 0, n = Math.round(3 + grow * 9); i < n; i++)
+    // It picks up over the first few seconds, and near the end it smoothly
+    // DIES DOWN (fewer and fainter streaks) as the last shards go
+    const grow = clamp(D.ct / 3, 0, 1);
+    D.windK = 1 - smoothstep(clamp((D.ct - (C.web.end - 3.2)) / 2.6, 0, 1));
+    for (let i = 0, n = Math.round((3 + grow * 9) * D.windK); i < n; i++)
       D.wind.push({ r: rr(40, 440), a: rnd() * 6.283, v: rr(60, 140), sw: rr(0.2, 0.5), b: rnd() < 0.3 });
     for (const w of D.wind) { w.v *= 1 + dt * 1.6; w.r -= w.v * dt; w.a += w.sw * w.v * dt / Math.max(w.r, 25); }
     D.wind = D.wind.filter(w => w.r > 5);
@@ -3858,7 +3877,7 @@ function drawRealityRift(R, x, y, T, k) {
 // everything on the path, drawn BEFORE the bloom so it all glows
 function drawDimPath(cx, cy) {
   const D = S.dim, T = S.starT; if (!D.phase) return;
-  const at = (x, y) => [cx + x - D.x, cy + y - D.y];               // a spot -> where it is on the screen
+  const at = (x, y) => [cx + x - D.camX, cy + y - D.camY];         // a spot -> where it is on the screen
   if (D.dot) {
     const [sx, sy] = at(D.dot.x, D.dot.y);
     drawBrightDot(sx, sy, D.dot.t, T);
@@ -3930,7 +3949,7 @@ function drawDimCrack(cx, cy) {
   const D = S.dim; if (D.phase !== 'crack') return;
   const C = D.crack, Wb = C.web, t = D.ct;
   const sh = t < DIMQ.open ? 2 : 0;                                // it shakes while it tears open
-  const ox = cx + C.x - D.x + rr(-sh, sh), oy = cy + C.y - D.y + rr(-sh, sh);
+  const ox = cx + C.x - D.camX + rr(-sh, sh), oy = cy + C.y - D.camY + rr(-sh, sh);
   const NR = Wb.rings.length - 1, gone = c => t >= c.fall;
   const quad = (i, j) => Wb.quads[((i + Wb.N) % Wb.N) * NR + j];
   const quadGone = q => q.tris.every(gone);                        // (both its shards have broken off)
@@ -4000,7 +4019,7 @@ function drawDimCrack(cx, cy) {
       g.moveTo(ox + Math.cos(w.a) * w.r, oy + Math.sin(w.a) * w.r);
       g.lineTo(ox + Math.cos(ta) * (w.r + len), oy + Math.sin(ta) * (w.r + len));
     }
-    g.globalAlpha = bright ? 0.55 : 0.22; g.stroke();
+    g.globalAlpha = (bright ? 0.55 : 0.22) * (D.windK ?? 1); g.stroke();   // (fading out at the end)
   }
   g.restore();
 }
