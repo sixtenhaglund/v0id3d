@@ -73,7 +73,7 @@ const CFG = {
 //  reloads into the new version. build-site.js stamps a real number in here
 //  for the website; 'dev' (your own copy) never checks.
 // =====================================================================
-const BUILD_ID = '20261010191515';
+const BUILD_ID = '20261010192824';
 function checkForUpdate(then = null, resume = null) {
   if (BUILD_ID === 'dev' || location.protocol === 'file:') { if (then) then(); return; }
   if (S.checking) return;
@@ -268,10 +268,11 @@ function makeStatic(size, density, onlyRed = false, blackBg = false) {
 // checkerboard, a ring, a zig-zag or a barcode. The seed decides which (and
 // its size), so the same seed always draws the exact same piece.
 const GLYPHS = 'ABEFHKMNRSVWXZ0123456789?/<>+-_';
-function glitchShape(ctx, x, y, col, s, seed) {
+// simple = true: ONLY lines, squares and rectangles (the time-out effect uses that)
+function glitchShape(ctx, x, y, col, s, seed, simple = false) {
   const R = mulberry32(seed), I = (a, b) => a + Math.floor(R() * (b - a + 1));
   ctx.fillStyle = col; ctx.strokeStyle = col; ctx.lineWidth = 1;
-  const q = R();
+  const q = simple ? R() * 0.42 : R();
   if (q < 0.42) {                                             // a block or a line (the classic)
     const t = R();
     if (t < 0.35) ctx.fillRect(x, y, I(3, 14) * s, 1);
@@ -302,17 +303,17 @@ function glitchShape(ctx, x, y, col, s, seed) {
   }
 }
 
-function makeWall(size) {
+function makeWall(size, simple = false) {
   const c = makeCanvas(size, size), x = c.getContext('2d');
   x.fillStyle = REDS[0]; x.fillRect(0, 0, size, size);
   const n = 3 * size * size / 8;
   for (let i = 0; i < n; i++) {
     const col = glitchCol(), px = ri(0, size - 1), py = ri(0, size - 1), seed = (rnd() * 1e9) | 0;
-    glitchShape(x, px, py, col, 1, seed);
+    glitchShape(x, px, py, col, 1, seed, simple);
     // near an edge? draw copies on the other side too, so the tile repeats seamlessly
-    if (px > size - 20) glitchShape(x, px - size, py, col, 1, seed);
-    if (py > size - 20) glitchShape(x, px, py - size, col, 1, seed);
-    if (px > size - 20 && py > size - 20) glitchShape(x, px - size, py - size, col, 1, seed);
+    if (px > size - 20) glitchShape(x, px - size, py, col, 1, seed, simple);
+    if (py > size - 20) glitchShape(x, px, py - size, col, 1, seed, simple);
+    if (px > size - 20 && py > size - 20) glitchShape(x, px - size, py - size, col, 1, seed, simple);
   }
   return c;
 }
@@ -333,12 +334,17 @@ const TILE = 256;
 const WALL_TILES = [0, 1, 2, 3].map(() => makeWall(TILE));
 const WALL = WALL_TILES.map(t => g.createPattern(t, 'repeat'));
 const WALL_GLOW = WALL_TILES.map(t => g.createPattern(makeWallGlow(t), 'repeat'));
+// the same wall, but built ONLY from lines, squares and rectangles (for the time-out effect)
+const WALL_SIMPLE_TILES = [0, 1, 2, 3].map(() => makeWall(TILE, true));
+const WALL_SIMPLE = WALL_SIMPLE_TILES.map(t => g.createPattern(t, 'repeat'));
+const WALL_SIMPLE_GLOW = WALL_SIMPLE_TILES.map(t => g.createPattern(makeWallGlow(t), 'repeat'));
 // one loose glitch piece drawn live: a random unique shape in the glitch
 // colors — and if it's white, it gets a small glow of its own
-function glitchPiece(x, y, s = 1) {
+// (simple = only lines/squares/rectangles, and no round glow behind white ones)
+function glitchPiece(x, y, s = 1, simple = false) {
   const col = glitchCol();
-  if (col === '#fff') glowAt(x + 3 * s, y + 2 * s, 7 * s, 7 * s, 0.7, PDOTS[3]);
-  glitchShape(g, x, y, col, s, (rnd() * 1e9) | 0);
+  if (col === '#fff' && !simple) glowAt(x + 3 * s, y + 2 * s, 7 * s, 7 * s, 0.7, PDOTS[3]);
+  glitchShape(g, x, y, col, s, (rnd() * 1e9) | 0, simple);
 }
 // the matching glow on top of a wall fill — same tile, same position
 function wallGlow(i, m, x, y, w, h, a = 0.6) {
@@ -756,24 +762,67 @@ function thump(vol = 0.5, f0 = 120, f1 = 38, dur = 0.4, delay = 0) {
   o.connect(gn).connect(AU.master); o.start(t); o.stop(t + dur + 0.05);
 }
 
-// EXTRA HITS for the jumpscare — one or more for every moment in the DEATH
-// timeline, all going through their own heavy distortion = LOUD and harsh.
-// gate = the kill sound's trance gate, so the big buzz gets chopped in sync.
-function jumpscareHits(t, gate) {
-  const ctx = AU.ctx;
-  const bus = ctx.createGain(); bus.gain.value = 1.3;
-  bus.connect(distortion(2.5)).connect(AU.master);
-  // a tone sliding from f0 to f1. swell = fade IN (and cut dead) instead of hit-then-fade
-  const osc = (when, dur, f0, f1, type, vol, pan = 0, swell = false) => {
+// THE GLASS DEATH REMIX — your RANSOM clip, cut up and replayed live to
+// match the picture moment for moment (T = the DEATH or CRACK timeline in
+// glass.js). A remix is just a list of PIECES of the clip, each played at
+// its own time, speed and place.
+//   hit      the crash, doubled an octave lower + a boom + glass cracking
+//   (time-out) the screech, slowed way down (stretched, like time is
+//            slowing), and on every creak a quick slice of it, higher each time
+//   bulge    the crash played BACKWARDS = it sucks in... while a filter
+//            takes the bass away
+//   still    silence
+//   drop     the crash comes back SLOW — the same slow motion as the
+//            picture — then speeds up exactly when the glass does
+//   lens     one sharp crack of glass, and the sound winds down (tape stop)
+//   black    the clip's last chord rings out over the death menu
+// cause = what killed you ('node' / 'rift' get their own extra layer)
+function glassRemix(T, cause) {
+  const ctx = AU.ctx, t = ctx.currentTime, K = AU.kill, CRASH = 1.29, START = 0.07;
+  const bus = ctx.createGain(); bus.gain.value = 1.2;
+  bus.connect(distortion(2.5)).connect(AU.master);                       // the extra hits: heavy distortion = LOUD
+  const dist = distortion(1.6), out = ctx.createGain(); out.gain.value = 0.85;
+  dist.connect(out).connect(AU.master);                                  // the clip: lighter distortion
+  // the build-up filter: a HIGHPASS only lets high sounds through. Sliding it
+  // up makes the bass fade away... then the drop brings it all back at once.
+  const build = ctx.createBiquadFilter(); build.type = 'highpass';
+  build.frequency.setValueAtTime(20, t); build.frequency.setValueAtTime(20, t + T.bulge);
+  build.frequency.exponentialRampToValueAtTime(1600, t + T.still);
+  build.connect(dist);
+
+  // ONE PIECE of the clip: when (from now), from (seconds into the clip), len (how much clip)
+  //   rate = speed AND pitch (2 = octave up, 0.5 = octave down), rev = backwards,
+  //   slowmo = its speed follows the slow motion, stopAt = tape stop from there to the black
+  const piece = (when, from, len, o = {}) => {
+    if (!K || len <= 0) return;
+    const rate = o.rate || 1, vol = o.vol ?? 1;
+    const s = ctx.createBufferSource(); s.buffer = o.rev ? AU.killRev : K;
+    const gn = ctx.createGain(); gn.gain.value = vol;
+    const p = ctx.createStereoPanner(); p.pan.value = o.pan || 0;
+    s.connect(gn).connect(p).connect(o.to || dist);
+    const r = s.playbackRate, a = t + when;
+    if (o.slowmo) {                                       // slow motion: slow... then the ramp up to full speed
+      r.setValueAtTime(rate * SND_SLOW, a); r.setValueAtTime(rate * SND_SLOW, a + T.slow);
+      r.linearRampToValueAtTime(rate, a + T.slow + T.ramp);
+    } else r.setValueAtTime(rate, a);
+    s.start(a, o.rev ? K.duration - from - len : from, len);
+    if (o.stopAt) {                                       // TAPE STOP: the speed slides down to almost 0, and it fades
+      const b = t + o.stopAt, e = t + T.black;
+      r.setValueAtTime(rate, b); r.exponentialRampToValueAtTime(rate * 0.1, e);
+      gn.gain.setValueAtTime(vol, b); gn.gain.linearRampToValueAtTime(0, e);
+      s.stop(e + 0.02);
+    }
+  };
+  // a tone sliding from f0 to f1 (swell = fade IN instead of hit-then-fade)
+  const osc = (when, dur, f0, f1, type, vol, pan = 0) => {
     const a = t + when, b = a + dur;
     const o = ctx.createOscillator(), gn = ctx.createGain(), p = ctx.createStereoPanner();
     o.type = type; o.frequency.setValueAtTime(f0, a);
     if (f1 !== f0) o.frequency.exponentialRampToValueAtTime(f1, b);
-    if (swell) { gn.gain.setValueAtTime(0.001, a); gn.gain.exponentialRampToValueAtTime(vol, b); gn.gain.setValueAtTime(0, b); }
-    else { gn.gain.setValueAtTime(vol, a); gn.gain.exponentialRampToValueAtTime(0.001, b); }
+    gn.gain.setValueAtTime(vol, a); gn.gain.exponentialRampToValueAtTime(0.001, b);
     p.pan.value = pan; o.connect(gn).connect(p).connect(bus); o.start(a); o.stop(b + 0.02);
   };
-  // noise through a bandpass filter sliding from f0 to f1
+  // crushed noise through a bandpass filter sliding from f0 to f1
   const noise = (when, dur, vol, f0, f1, q = 1, pan = 0, swell = false) => {
     const a = t + when, b = a + dur;
     const s = ctx.createBufferSource(); s.buffer = AU.crush;
@@ -784,46 +833,60 @@ function jumpscareHits(t, gate) {
     else { gn.gain.setValueAtTime(vol, a); gn.gain.exponentialRampToValueAtTime(0.001, b); }
     s.connect(f).connect(gn).connect(p).connect(bus); s.start(a, rnd() * 1.5); s.stop(b + 0.02);
   };
+  // glass CRACKING = lots of tiny, very short, very high ticks
+  const ticks = (when, spread, n, f0 = 4000, f1 = 10000, len = 0.012) => {
+    for (let i = 0; i < n; i++) { const f = rr(f0, f1); noise(when + rr(0, spread), rr(len * 0.35, len), rr(0.45, 0.85), f, f, 5, rr(-1, 1)); }
+  };
 
-  // 1) THE SLAM: sub-bass drop + noise blast + a METAL CLANG. Metal sounds
-  //    "clangy" because its tones are NOT neat multiples (1, 2.76, 5.4, 8.9...)
-  osc(DEATH.slam, 1.0, 90, 22, 'sine', 1.0);
-  noise(DEATH.slam, 0.5, 0.9, 6000, 400, 0.4);
-  for (const [m, v] of [[1, 0.35], [2.76, 0.25], [5.4, 0.18], [8.93, 0.12]])
-    osc(DEATH.slam, 0.9, 180 * m, 175 * m, 'sine', v);
-  // 2) beat repeat: a snare crack + a bass stab on each hit
-  DEATH.repeat.forEach((r, i) => {
-    noise(r, 0.12, 0.7, 2500, 1200, 0.8, [-0.8, 0.8, 0][i]);
-    osc(r, 0.1, 110, 55, 'square', 0.4, [-0.8, 0.8, 0][i]);
-  });
-  // glass CRACKING: bursts of tiny sharp ticks as the cracks spread
-  for (const [when, n] of [[DEATH.slam, 12], ...DEATH.repeat.map(r => [r, 6])])
-    for (let i = 0; i < n; i++) { const f = rr(4000, 10000); noise(when + rr(0, 0.08), rr(0.004, 0.012), rr(0.5, 0.9), f, f, 5, rr(-1, 1)); }
-  // 3) RISER: noise + a siren sweeping UP... cut dead right at the silence
-  noise(0.7, DEATH.still - 0.7, 0.4, 400, 7000, 2, 0, true);
-  osc(0.7, DEATH.still - 0.7, 200, 1600, 'sawtooth', 0.2, 0, true);
-  // 4) CD skip: a loud digital click on every skip, bouncing left/right
-  DEATH.skips.forEach((s, i) => noise(DEATH.crash + s, 0.03, 0.9, 3000 + i * 600, 3000 + i * 600, 3, i % 2 ? 0.7 : -0.7));
-  // 5) THE DROP
-  osc(DEATH.land, 1.6, 60, 26, 'sine', 1.2);                              // huge 808 boom
-  noise(DEATH.land, 0.9, 1.0, 8000, 300, 0.3);                            // explosion
-  osc(DEATH.land, 1.2, 1400, 90, 'sawtooth', 0.35);                       // screaming dive
-  for (const n of [33, 34, 39, 40]) osc(DEATH.land, 0.8, NOTE(n), NOTE(n), 'sawtooth', 0.22);   // ugly low chord
-  for (let i = 0; i < 14; i++)                                            // shattering glass
-    noise(DEATH.land + rr(0, 0.45), rr(0.01, 0.04), rr(0.3, 0.6), rr(3000, 9000), rr(3000, 9000), 4, rr(-1, 1));
-  // 6) trance gate: a massive bass buzz, chopped by the SAME gate as the clip
-  if (gate) {
-    const [g0, g1] = DEATH.gate;
-    const o = ctx.createOscillator(), lp = ctx.createBiquadFilter(), gn = ctx.createGain();
-    o.type = 'square'; o.frequency.value = 55; lp.type = 'lowpass'; lp.frequency.value = 700;
-    gn.gain.setValueAtTime(0.6, t + g0); gn.gain.setValueAtTime(0, t + g1);
-    o.connect(lp).connect(gn).connect(gate); o.start(t + g0); o.stop(t + g1 + 0.02);
+  // --- THE HIT ---
+  piece(0, CRASH, 0.16);
+  piece(0, CRASH, 0.16, { rate: 0.5, vol: 0.6 });                          // octave down = weight
+  osc(0, 1.0, 95, 22, 'sine', 1.0);                                        // sub drop
+  noise(0, 0.45, 0.8, 6000, 500, 0.4);
+  for (const [m, v] of [[1, 0.3], [2.76, 0.22], [5.4, 0.15], [8.93, 0.1]])   // a glassy CLANG (tones that aren't neat multiples)
+    osc(0, 1.1, 620 * m, 600 * m, 'sine', v);
+  ticks(0, T.creaks.length ? 0.12 : T.spread, T.creaks.length ? 16 : 34);   // (HP death: the crack RACES out)
+  if (cause === 'node') {                                                  // electrocuted: a zap diving down
+    osc(0, 0.5, 2400, 80, 'sawtooth', 0.35); noise(0, 0.25, 0.6, 3000, 800, 0.8);
+  } else if (cause === 'rift') {                                           // eaten: a deep crunch
+    osc(0, 0.7, 70, 30, 'square', 0.4); noise(0, 0.4, 0.7, 500, 150, 1.2);
   }
-  // 7) tape stop + TV off: a power-down whine, then the old-TV "thunk"
-  osc(DEATH.tape, 0.4, 900, 40, 'sawtooth', 0.35);
-  osc(DEATH.off + 0.14, 0.25, 120, 30, 'sine', 0.9);
-  noise(DEATH.off + 0.14, 0.04, 0.8, 5000, 5000, 1);
+  // --- THE STRAIN (time-out only): the screech stretched out, and the creaks ---
+  if (T.creaks.length) {
+    piece(0.1, START, 0.5, { rate: 0.55, vol: 0.8, to: build });          // 0.5 s of clip stretched over ~0.9 s
+    T.creaks.forEach((c, i) => {
+      piece(c, 0.47, 0.07, { rate: [1, 1.25, 1.5][i], pan: [-0.8, 0.8, 0][i], to: build });
+      ticks(c, 0.08, 8);
+      osc(c, 0.12, 120, 50, 'square', 0.3, [-0.8, 0.8, 0][i]);
+    });
+  }
+  // --- THE BULGE: the crash backwards, sucking in (it ends exactly at the silence) ---
+  piece(T.bulge, CRASH, T.still - T.bulge, { rev: true, vol: 1.2, to: build });
+  noise(T.bulge, T.still - T.bulge, 0.35, 400, 6000, 2, 0, true);          // + a rising hiss, cut dead
+  // --- THE DROP, in slow motion ---
+  const clipLeft = K ? K.duration - CRASH : 0;
+  piece(T.drop, CRASH, clipLeft, { slowmo: true, stopAt: T.lens });
+  piece(T.drop, CRASH, clipLeft, { slowmo: true, rate: 0.5, vol: 0.5, stopAt: T.lens });
+  osc(T.drop, T.slow + T.ramp + 0.6, 55, 24, 'sine', 1.2);                 // a huge, long 808 boom
+  // slow-motion WHOOSH: air rushing, slow and low... rising as it speeds up
+  noiseEnv(t + T.drop, 'lowpass', 220, 2600, T.slow + T.ramp + 0.25,
+    [[0.03, 0.5], [T.slow, 0.35], [T.slow + T.ramp, 0.55], [T.slow + T.ramp + 0.25, 0]], 0.9, bus);
+  // shattering: during the slow motion, a few LOW, slow cracks (slowed down
+  // like everything else)... then a storm of high ones as it speeds up
+  ticks(T.drop + 0.05, T.slow - 0.1, 10, 900, 2600, 0.06);
+  ticks(T.drop + T.slow, T.ramp, 26, 3500, 10000);
+  ticks(T.drop + T.slow + T.ramp, Math.max(0.05, T.lens - T.drop - T.slow - T.ramp), 14, 5000, 11000);
+  // --- THE LENS: one piece hits the camera ---
+  osc(T.lens, 0.18, 500, 60, 'sine', 0.9);
+  noise(T.lens, 0.06, 0.9, 7000, 3000, 0.6);
+  ticks(T.lens, 0.05, 14, 6000, 12000, 0.008);
+  // --- BLACK: the clip's last chord rings out ---
+  piece(T.black + 0.1, 2.4, K ? K.duration - 2.4 : 0, { vol: 0.9 });
 }
+// how fast the clip plays in the slow motion. (Not as slow as the picture's
+// SLOWMO = 0.16 — at that speed the sound turns into a mumble — but the
+// slow-down and the speed-up happen at exactly the same moments.)
+const SND_SLOW = 0.42;
 
 const SFX = {
   pickup(pan) {
@@ -865,18 +928,10 @@ const SFX = {
   },
   // A RIFT'S BITE: a small crunchy glitch
   riftBite() { burst(0.08, 0.28, 900, 1.5, true); thump(0.25, 90, 40, 0.12); },
-  // THE CRACK DEATH: glass cracking all over, a deep boom, and the crash from
-  // your RANSOM clip (if it's loaded)
-  crackDeath() {
-    const ctx = AU.ctx; if (!ctx) return;
-    thump(1, 180, 25, 1.0);
-    burst(0.4, 0.5, 2000, 0.5, true);
-    for (let i = 0; i < 20; i++) { const f = rr(4000, 10000); burst(rr(0.004, 0.012), rr(0.5, 0.9), f, 5, true, rr(-1, 1), 0, rr(0, 0.5)); }
-    if (AU.kill) {
-      const s = ctx.createBufferSource(), gn = ctx.createGain(), t = ctx.currentTime;
-      s.buffer = AU.kill; gn.gain.setValueAtTime(0.9, t); gn.gain.setValueAtTime(0.9, t + 0.9); gn.gain.linearRampToValueAtTime(0, t + 1.3);
-      s.connect(distortion(1.6)).connect(gn).connect(AU.master); s.start(t, 1.29, 1.3);
-    }
+  // THE CRACK DEATH (your health ran out): the glass remix, short version
+  crackDeath(cause) {
+    if (!AU.ctx) return;
+    glassRemix(CRACK, cause);
   },
   // THE PORTAL TAKES YOU: a shimmering chord that rises as the screen warps,
   // a deep swell, and when everything has shrunk into the dot: one soft
@@ -1169,91 +1224,11 @@ const SFX = {
     burst(1.8, 0.2, 200, 1, false, 0, 6000);
     thump(0.7, 90, 30, 1.2);
   },
-  // THE KILL SOUND — your RANSOM clip, REMIXED live. A remix is just a list
-  // of PIECES of the clip, each played at its own time, speed and place.
-  //
-  //  BUILD-UP
-  //   0.00  hit! the clip starts, doubled an octave lower for weight
-  //   0.40  "beat repeat": a tenth of a second repeats 3x, bouncing left/right
-  //   0.70  the clip comes back pitched UP (tension!) while a filter slowly
-  //         removes the bass — so the drop hits harder when the bass returns
-  //   0.97  the crash plays BACKWARDS, which sounds like it's sucking in...
-  //  THE DROP
-  //   1.22  ...to the crash, skipping like a scratched CD, faster and faster
-  //   1.52  it LANDS: slowed down + an octave-down copy = huge
-  //   1.90  "trance gate": the volume chops on/off 14 times a second
-  //   2.30  "tape stop": everything slows down to nothing (as the TV turns off)
-  //   2.70  the clip's last chord rings out over the game-over screen
+  // THE KILL SOUND (time ran out): the glass remix of your RANSOM clip (see glassRemix)
   death() {
-    const ctx = AU.ctx; if (!ctx) return;
+    if (!AU.ctx) return;
     if (!AU.kill) return SFX.deathSynth();          // clip not loaded? use the homemade one
-    const t = ctx.currentTime, K = AU.kill, dur = K.duration;
-    const START = 0.07, CRASH = 1.29;               // where things are inside the clip
-    const dist = distortion(1.6), out = ctx.createGain();
-    out.gain.value = 0.85; dist.connect(out).connect(AU.master);
-
-    // the build-up filter: a HIGHPASS only lets high sounds through. Sliding it
-    // up makes the bass fade away... then we snap it back down for the drop.
-    const build = ctx.createBiquadFilter(); build.type = 'highpass';
-    build.frequency.setValueAtTime(20, t);
-    build.frequency.setValueAtTime(20, t + 0.7);
-    build.frequency.exponentialRampToValueAtTime(1800, t + DEATH.crash);
-    build.frequency.setValueAtTime(20, t + DEATH.land);
-    build.connect(dist);
-
-    // the trance gate: a square wave flips the volume between 0 and 1
-    const gate = ctx.createGain(); gate.gain.setValueAtTime(1, t);
-    const lfo = ctx.createOscillator(); lfo.type = 'square'; lfo.frequency.value = 14;
-    const depth = ctx.createGain(); depth.gain.setValueAtTime(0, t);
-    const [g0, g1] = DEATH.gate;
-    gate.gain.setValueAtTime(0.5, t + g0); depth.gain.setValueAtTime(0.5, t + g0);
-    gate.gain.setValueAtTime(1, t + g1); depth.gain.setValueAtTime(0, t + g1);
-    lfo.connect(depth).connect(gate.gain); lfo.start(t); lfo.stop(t + 2.4);
-    gate.connect(dist);
-
-    // ONE PIECE: when (seconds from now), from (seconds into the clip), len (how much clip)
-    // options: rate (speed AND pitch: 2 = octave up, 0.5 = octave down), vol, pan,
-    //          rev (backwards), to (which effect it goes through), tapeStop
-    const piece = (when, from, len, o = {}) => {
-      const rate = o.rate || 1, vol = o.vol ?? 1;
-      const s = ctx.createBufferSource(); s.buffer = o.rev ? AU.killRev : K;
-      s.playbackRate.value = rate;
-      const gn = ctx.createGain(); gn.gain.value = vol;
-      const p = ctx.createStereoPanner(); p.pan.value = o.pan || 0;
-      s.connect(gn).connect(p).connect(o.to || dist);
-      // backwards: the clip is flipped, so "from" has to be flipped too
-      s.start(t + when, o.rev ? dur - from - len : from, len);
-      if (o.tapeStop) {                             // slide the speed down to almost 0 and fade
-        const [a, b] = o.tapeStop;
-        s.playbackRate.setValueAtTime(rate, t + a); s.playbackRate.exponentialRampToValueAtTime(0.12, t + b);
-        gn.gain.setValueAtTime(vol, t + a); gn.gain.linearRampToValueAtTime(0, t + b);
-        s.stop(t + b + 0.03);
-      }
-    };
-
-    // --- BUILD-UP ---
-    piece(0, START, 0.4, { to: build });
-    piece(0, START, 0.2, { to: build, rate: 0.5, vol: 0.55 });              // octave down
-    for (let i = 0; i < 3; i++)                                             // beat repeat
-      piece(DEATH.repeat[i], 0.47, 0.1, { to: build, pan: [-0.8, 0.8, 0][i] });
-    piece(0.7, 0.57, 0.3, { to: build, rate: 1.12 });                       // pitched up
-    piece(0.97, 0.87, 0.25, { to: build, vol: 0.5 });
-    piece(0.97, CRASH, 0.25, { to: build, rev: true, vol: 1.2 });           // backwards crash
-    // --- THE DROP ---
-    const skips = DEATH.skips;                                              // closer and closer
-    skips.forEach((w, i) => piece(DEATH.crash + w, CRASH, Math.min(0.06, (skips[i + 1] ?? 0.3) - w),
-      { rate: 1 + i * 0.06, vol: 1 - i * 0.08, pan: i % 2 ? 0.7 : -0.7 }));
-    const stop = [DEATH.tape, DEATH.tape + 0.32];
-    piece(DEATH.land, CRASH, dur - CRASH, { to: gate, rate: 0.92, tapeStop: stop });
-    piece(DEATH.land, CRASH, dur - CRASH, { to: gate, rate: 0.46, vol: 0.5, tapeStop: stop });
-    piece(2.7, 2.4, dur - 2.4, { vol: 0.9 });                               // the last chord
-
-    // drums on top
-    thump(0.9, 200, 30, 0.6); burst(0.3, 0.4, 1500, 0.4, true);             // the hit
-    for (const r of DEATH.repeat) thump(0.35, 160, 50, 0.12, r);           // kicks under the beat repeat
-    thump(1, 200, 25, 1.2, DEATH.land); burst(0.9, 0.4, 3000, 0.3, true, 0, 300, DEATH.land);
-    for (let i = 0; i < 4; i++) thump(0.5, 130, 35, 0.25, DEATH.gate[0] + i * 0.1);   // pounding under the gate
-    jumpscareHits(t, gate);                                                 // + all the LOUD extras
+    glassRemix(DEATH, 'time');
   },
 
   // the HOMEMADE version, built from a spectrogram of the clip. Only used
@@ -1866,12 +1841,11 @@ function hurt(dmg, cause, small = false) {
   if (small) SFX.riftBite(); else SFX.zapHurt();
   if (S.hp <= 0) crackDie(cause);
 }
-// DYING (by damage, or The Portal): the screen cracks from where you are,
-// then the death menu tells you what killed you
-const CRACK = { spread: 0.55, end: 1.35 };
+// DYING (by damage): the screen cracks from where you are and explodes
+// (CRACK timeline in glass.js), then the death menu tells you what killed you
 function crackDie(cause) {
   S.mode = 'cracking'; S.crackT = 0; S.deathCause = cause; S.shatter = null; S.shake = 8;
-  SFX.crackDeath();
+  SFX.crackDeath(cause);
 }
 // what the death menu says for each way of dying
 const DEATH_TEXT = {
@@ -2144,7 +2118,9 @@ function update(dt) {
     const ca = 1 - Math.exp(-dt * 1.8);               // the camera glides slowly over to The Anchor
     cam.x += (0 - cam.x) * ca; cam.y += (0 - cam.y) * ca;
     const home = world.shards.filter(s => s.state === 'home');
-    for (const s of home) if (!s.clicked && S.clearT >= s.asT + CLEAR.flyDur) { s.clicked = true; sealClick(s, home.length); }
+    // click the moment a piece first HITS its spot (it overshoots and settles
+    // after that — clicking when it finished settling sounded late)
+    for (const s of home) if (!s.clicked && S.clearT >= s.asT + CLEAR.flyDur * SNAP_HIT) { s.clicked = true; sealClick(s, home.length); }
     if (before < CLEAR.done && S.clearT >= CLEAR.done) sealComplete();
     if (S.clearT > CLEAR.end) {
       nextArea();
@@ -2928,6 +2904,10 @@ function drawAnchor(camX, camY, k) {
 //   4.6  BOOM: flash, light beams, three shock rings — the seal is whole again.
 //        It keeps its cracks, glowing: you can see what it went through.
 const CLEAR = { fly0: 1.2, fly1: 3.6, flyDur: 0.6, hold: 4.2, done: 4.6, text: 5.3, enter: 6, end: 11 };
+// the "back" easing a piece flies in with (see drawSealAssembly). It reaches its
+// spot when (u - 1) = -C1 / (C1 + 1), i.e. 37% of the way through the flight —
+// that's the moment it CLICKS. (The rest is the overshoot settling back.)
+const SNAP_C1 = 1.70158, SNAP_HIT = 1 / (SNAP_C1 + 1);
 
 // where a piece waits in the big ring (angle = the direction of its spot)
 function hoverPose(s, T, R) {
@@ -2994,7 +2974,7 @@ function drawSealAssembly(ax, ay, k) {
       const [hx, hy, ha] = hoverPose(s, s.asT, R);      // fly in from where it was waiting
       const u = Math.min(1, (T - s.asT) / CLEAR.flyDur);
       // "back" easing: it shoots a little PAST its spot, then settles back = a satisfying snap
-      const c1 = 1.70158, e = 1 + (c1 + 1) * Math.pow(u - 1, 3) + c1 * Math.pow(u - 1, 2);
+      const c1 = SNAP_C1, e = 1 + (c1 + 1) * Math.pow(u - 1, 3) + c1 * Math.pow(u - 1, 2);
       x = lerp(hx, tx, e); y = lerp(hy, ty, e);
       const turn = ((-ha % 6.283) + 9.425) % 6.283 - 3.1416;   // shortest way round to angle 0
       a = ha + turn * Math.min(1, u * 1.3); glow = u < 1 ? 1 : 0.15;
@@ -4662,6 +4642,7 @@ function grabZoom(px, py) {
   const vw = W / z, vh = H / z, vx = clamp(px - vw / 2, 0, W - vw), vy = clamp(py - vh / 2, 0, H - vh);
   sg.globalCompositeOperation = 'source-over'; sg.drawImage(cv, 0, 0);
   g.drawImage(scratch, vx, vy, vw, vh, 0, 0, W, H);
+  return [(px - vx) * z, (py - vy) * z];             // where YOU ended up on screen (the glass breaks there)
 }
 
 // px, py = where YOU are on screen — the lightning reaches for you
@@ -4739,18 +4720,19 @@ function edgeCorruption(L, px = W / 2, py = H / 2) {
   // so it crackles instead of turning into a blur).
   // (the wall's shape is FILLED directly with the tile pattern — faster than
   // cutting it out with clip() and then painting the whole screen through it)
-  const wf = Math.floor(S.t * 12), wp = WALL[wf % WALL.length];
+  // (the SIMPLE wall: only lines, squares and rectangles — no rings, letters or triangles)
+  const wf = Math.floor(S.t * 12), wp = WALL_SIMPLE[wf % WALL_SIMPLE.length];
   const wm = new DOMMatrix().translate((hash2(wf, 1, 21) * TILE) | 0, (hash2(wf, 2, 21) * TILE) | 0);
   wp.setTransform(wm);
   g.fillStyle = wp; g.fill();
-  const gp = WALL_GLOW[wf % WALL.length]; gp.setTransform(wm);             // the white bits GLOW
+  const gp = WALL_SIMPLE_GLOW[wf % WALL_SIMPLE.length]; gp.setTransform(wm);             // the white bits GLOW
   g.save(); g.globalCompositeOperation = 'lighter'; g.globalAlpha = 0.6; g.fillStyle = gp; g.fill(); g.restore();
 
   // 4) glitch pieces breaking off the wall — some fly far in
   const pieces = Math.round((10 + L * 110) * fin);
   for (let i = 0; i < pieces; i++) {
     const a = rnd() * 6.283 - 3.1416, m = tunnelM(a), f = 1.02 - Math.pow(rnd(), 2) * 0.5;
-    glitchPiece(Math.round(cx + Math.cos(a) * ax * m * f), Math.round(cy + Math.sin(a) * by * m * f), rnd() < L ? 2 : 1);
+    glitchPiece(Math.round(cx + Math.cos(a) * ax * m * f), Math.round(cy + Math.sin(a) * by * m * f), rnd() < L ? 2 : 1, true);
   }
 }
 </script>
@@ -5131,207 +5113,6 @@ function drawHUD(k, late) {
   }
 }
 
-// THE JUMPSCARE — your SCREEN cracks like glass and explodes. Every moment is
-// synced to the kill-sound remix, and both use this ONE list of times, so
-// the picture and the sound can never drift apart.
-//   0.06  the screen freezes and CRACKS — a spiderweb from where the hit landed
-//   0.40  beat repeat: each hit spreads the cracks further
-//   0.70  build-up: pieces of glass fall out, leaving black holes
-//   1.12  silence before the drop: everything goes DEAD STILL
-//   1.22  the CD skip: the broken screen jumps left/right with each skip
-//   1.52  THE DROP: white flash, the whole screen EXPLODES toward you
-//   1.90  trance gate: strips of the picture chop back and forth
-//   2.30  tape stop: the picture sags down... then the old-TV switch-off
-const DEATH = {
-  slam: 0.06, repeat: [0.4, 0.5, 0.6], still: 1.12,
-  crash: 1.22, skips: [0, 0.07, 0.13, 0.18, 0.225, 0.265], land: 1.52,
-  gate: [1.9, 2.28], tape: 2.3, off: 2.45, end: 2.65,
-};
-
-// Build the broken glass. A spiderweb is two kinds of crack: straight-ish
-// lines shooting OUT from the hit (radial), and rings going AROUND it.
-// Where they cross, they cut the screen into pieces ("cells").
-// (ix, iy) = where the hit lands; fall0..fall1 = when loose pieces fall out
-function buildShatter(ix = W / 2 + rr(-24, 24), iy = H / 2 + rr(-14, 14), fall0 = 0.72, fall1 = DEATH.still) {
-  const fr = makeCanvas(W, H); fr.getContext('2d').drawImage(cv, 0, 0);   // freeze the screen as it was
-  const N = ri(11, 14), rings = [0, 7, 18, 36, 64, 105, 165, 250, 380, 600];
-  const rad = [], a0 = rnd() * 6.283;
-  for (let i = 0; i < N; i++) {                       // each radial crack = a wobbly line of points
-    const a = a0 + (i + rr(-0.3, 0.3)) / N * 6.283, pts = [];
-    for (let j = 0; j < rings.length; j++) {
-      const r = rings[j] * rr(0.85, 1.15), aj = a + rr(-0.08, 0.08);
-      pts.push([ix + Math.cos(aj) * r, iy + Math.sin(aj) * r * 0.9]);
-    }
-    rad.push(pts);
-  }
-  const cells = [];
-  for (let i = 0; i < N; i++) for (let j = 0; j < rings.length - 1; j++) {
-    const A = rad[i], B = rad[(i + 1) % N];
-    const poly = [A[j], A[j + 1], B[j + 1], B[j]];   // the piece between two cracks and two rings
-    const cx = poly.reduce((s, p) => s + p[0], 0) / 4, cy = poly.reduce((s, p) => s + p[1], 0) / 4;
-    cells.push({
-      poly, cx, cy, rin: rings[j],
-      ox: rr(-2, 2), oy: rr(-2, 2),                    // cracked pieces sit a bit crooked
-      fall: j >= 3 && rnd() < 0.45 ? rr(fall0, fall1) : 99,        // some fall out
-      vx: rr(-25, 25), spin: rr(-1.5, 1.5), edge: rnd() < 0.35,    // some catch the light
-    });
-  }
-  const debris = [];                                   // tiny glass bits for the explosion
-  for (let i = 0; i < 140; i++) {
-    const a = rnd() * 6.283, v = rr(80, 520);
-    debris.push({ vx: Math.cos(a) * v, vy: Math.sin(a) * v, s: rnd() < 0.2 ? 3 : rnd() < 0.5 ? 2 : 1, col: rnd() < 0.6 ? '#fff' : REDS[ri(0, 3)] });
-  }
-  return { fr, ix, iy, rad, rings, cells, N, debris };
-}
-
-// how far the cracks have spread (in pixels from the hit): a jump on
-// the slam and on each beat-repeat hit, then racing to the edges
-function crackReach(vt) {
-  let L = vt >= DEATH.slam ? 70 : 0;
-  DEATH.repeat.forEach((r, i) => { if (vt >= r) L = 70 + (i + 1) * 90; });
-  if (vt >= 0.7) L = 340 + (vt - 0.7) * 900;
-  return L;
-}
-
-function cellPath(c) {
-  g.beginPath(); c.poly.forEach(([x, y], i) => i ? g.lineTo(x, y) : g.moveTo(x, y)); g.closePath();
-}
-// one piece of glass: the frozen screen, cut to the piece's shape, then
-// moved / spun / grown. (translate to its middle, spin, grow, translate back)
-function drawCell(SH, c, ox, oy, rot, sc, flying) {
-  g.save();
-  g.translate(c.cx + ox, c.cy + oy); g.rotate(rot); g.scale(sc, sc); g.translate(-c.cx, -c.cy);
-  cellPath(c);
-  g.save(); g.clip(); g.drawImage(SH.fr, 0, 0); g.restore();
-  if (c.edge || flying) { g.strokeStyle = '#fff'; g.lineWidth = 1 / sc; g.stroke(); }   // a shiny glass edge
-  g.restore();
-}
-
-// the cracks: a thick pure-red glow line, with a thin white line on top
-function drawCracks(SH, L) {
-  const seg = [];
-  for (let i = 0; i < SH.N; i++) {
-    const P = SH.rad[i], Q = SH.rad[(i + 1) % SH.N];
-    for (let j = 0; j < SH.rings.length - 1; j++) {
-      if (SH.rings[j] >= L) break;
-      const f = Math.min(1, (L - SH.rings[j]) / (SH.rings[j + 1] - SH.rings[j]));   // a crack still growing
-      seg.push([P[j], [lerp(P[j][0], P[j + 1][0], f), lerp(P[j][1], P[j + 1][1], f)]]);
-      if (j > 0 && SH.rings[j] * 1.4 < L) seg.push([P[j], Q[j]]);                  // ring pieces
-    }
-  }
-  for (const [w, col] of [[3, '#ff0000'], [1, '#fff']]) {
-    g.strokeStyle = col; g.lineWidth = w; g.beginPath();
-    for (const [a, b] of seg) { g.moveTo(a[0], a[1]); g.lineTo(b[0], b[1]); }
-    g.stroke();
-  }
-  for (let i = 0; i < 26; i++) {                       // crushed glass right where it hit
-    const a = hash2(i, 1, 81) * 6.283, d = hash2(i, 2, 81) * 9;
-    g.fillStyle = hash2(i, 3, 81) < 0.6 ? '#fff' : '#ff0000';
-    g.fillRect(Math.round(SH.ix + Math.cos(a) * d), Math.round(SH.iy + Math.sin(a) * d), 1 + (i % 2), 1);
-  }
-}
-
-function drawJumpscare(t) {
-  if (t < DEATH.slam) return;
-  if (!S.shatter) S.shatter = buildShatter();
-  const SH = S.shatter;
-  // "visual time" STOPS during the silence and the CD skip, then carries on
-  const vt = t < DEATH.still ? t : t < DEATH.land ? DEATH.still : t - (DEATH.land - DEATH.still);
-  const skipping = t >= DEATH.crash && t < DEATH.land, landed = t >= DEATH.land;
-  const still = t >= DEATH.still && t < DEATH.crash, u = t - DEATH.slam;
-  let skipN = 0;
-  if (skipping) DEATH.skips.forEach((s, i) => { if (t >= DEATH.crash + s) skipN = i; });
-
-  // --- camera ---
-  let pump = 0;                                        // kicks on each beat-repeat hit
-  for (const r of DEATH.repeat) if (t >= r) pump = Math.max(pump, Math.exp(-(t - r) * 18));
-  const punch = u < 0.16 ? 1.12 - 0.12 * (1 - Math.pow(1 - u / 0.16, 3)) : 1;   // the hit punches in
-  const zoom = punch * (1 + pump * 0.05);
-  const shake = still ? 0 : skipping ? 1 : 3 + pump * 10 + (u < 0.2 ? 10 : 0) + Math.max(0, vt - 0.7) * 8 + (landed ? 6 : 0);
-  const jump = skipping ? (skipN % 2 ? 1 : -1) * (5 + skipN * 3) : 0;   // follows the sound left/right
-  const sx = rr(-shake, shake) + jump, sy = rr(-shake, shake);
-  const boom = landed ? t - DEATH.land : -1;           // seconds since the explosion
-
-  // 1) behind the glass: nothing but black
-  g.fillStyle = '#000'; g.fillRect(0, 0, W, H);
-
-  // 2) the glass
-  const L = crackReach(vt);
-  g.save(); g.translate(W / 2 + sx, H / 2 + sy); g.scale(zoom, zoom); g.translate(-W / 2, -H / 2);
-  if (!landed) g.drawImage(SH.fr, 0, 0);               // the unbroken part
-  for (const c of SH.cells) {
-    const cracked = c.rin < L;
-    if (!cracked && !landed) continue;                 // still in one piece: nothing to do
-    let ox = c.ox, oy = c.oy, rot = 0, sc = 1;
-    if (vt > c.fall) {                                 // falling out (gravity: distance grows with time²)
-      const f = vt - c.fall;
-      ox += c.vx * f; oy += 320 * f * f; rot = c.spin * f * 3;
-    }
-    if (boom >= 0) {                                   // EXPLODING toward you: flies out, spins, GROWS
-      const dx = c.cx - SH.ix, dy = c.cy - SH.iy, dl = Math.hypot(dx, dy) || 1;
-      const push = (40 + dl) * boom * (1 + boom * 1.5);
-      ox += dx / dl * push; oy += dy / dl * push; rot += c.spin * boom * 5; sc = 1 + boom * 3;
-    }
-    if (!landed) { g.fillStyle = '#000'; cellPath(c); g.fill(); }   // the hole where it WAS
-    if (c.cy + oy - 40 > H * 1.5 || Math.abs(ox) > W * 1.5 || Math.abs(oy) > H * 1.5) continue;
-    drawCell(SH, c, ox, oy, rot, sc, landed);
-  }
-  if (!landed) drawCracks(SH, L);
-  g.restore();
-
-  // 3) the explosion: tiny glass bits flying out from where it hit
-  if (boom >= 0) {
-    for (const d of SH.debris) {
-      const k = 1 + boom * 3;                          // they speed up (flying at the camera)
-      const x = SH.ix + d.vx * boom * k, y = SH.iy + d.vy * boom * k + 60 * boom * boom;
-      if (x < -5 || x > W + 5 || y < -5 || y > H + 5) continue;
-      const s = Math.round(d.s * (1 + boom * 2.5));   // and get bigger as they get closer
-      g.fillStyle = d.col; g.fillRect(Math.round(x), Math.round(y), s, s);
-    }
-  }
-
-  // 4) torn strips sliding sideways (not during the silence)
-  sg.globalCompositeOperation = 'copy'; sg.drawImage(cv, 0, 0);
-  if (!still) for (let i = 0, n = landed ? 12 : skipping ? 8 : 3; i < n; i++) {
-    const y = ri(0, H), h = ri(1, landed ? 12 : 5), dx = (rnd() < 0.5 ? -1 : 1) * ri(3, landed ? 60 : 14);
-    g.drawImage(scratch, 0, y, W, h, dx, y, W, h);
-  }
-
-  // 5) THE DROP: one white flash, then a red ghost copy splitting off
-  if (t >= DEATH.land && t < DEATH.land + 0.045) { g.fillStyle = '#fff'; g.fillRect(0, 0, W, H); }
-  else if (landed && t < DEATH.land + 0.5) {
-    rg.globalCompositeOperation = 'copy'; rg.drawImage(cv, 0, 0, redCopy.width, redCopy.height);
-    rg.globalCompositeOperation = 'multiply'; rg.fillStyle = '#f00'; rg.fillRect(0, 0, W, H);
-    g.globalCompositeOperation = 'lighter'; g.globalAlpha = 0.7;
-    g.drawImage(redCopy, ri(4, 14) * (rnd() < 0.5 ? -1 : 1), 0, W, H);
-    g.globalAlpha = 1; g.globalCompositeOperation = 'source-over';
-  }
-
-  // 6) trance gate: bands of the picture slide back and forth, 14x a second
-  if (t >= DEATH.gate[0] && t < DEATH.gate[1]) {
-    const flip = Math.floor((t - DEATH.gate[0]) * 28) % 2 ? 1 : -1;
-    sg.drawImage(cv, 0, 0);
-    for (let y = 0; y < H; y += 8) g.drawImage(scratch, 0, y, W, 4, flip * ((y >> 3) % 2 ? 14 : -14), y, W, 4);
-  }
-
-  // 7) tape stop: the picture sags and slides down
-  if (t >= DEATH.tape && t < DEATH.off) {
-    const c = (t - DEATH.tape) / (DEATH.off - DEATH.tape);
-    sg.drawImage(cv, 0, 0);
-    g.fillStyle = '#000'; g.fillRect(0, 0, W, H);
-    g.drawImage(scratch, 0, 0, W, H, 0, Math.round(c * c * H * 0.35), W, Math.round(H * (1 - c * 0.3)));
-  }
-
-  // 8) old-TV switch-off: squash the whole picture into a thin line
-  if (t > DEATH.off) {
-    const c = Math.min(1, (t - DEATH.off) / 0.14);
-    sg.drawImage(cv, 0, 0);
-    g.fillStyle = '#000'; g.fillRect(0, 0, W, H);
-    const h = Math.max(1, Math.round(H * (1 - c))), w = W * (1 + c * 0.5);
-    g.drawImage(scratch, (W - w) / 2, Math.round(H / 2 - h / 2), w, h);
-  }
-}
-
 function dim(a) { g.fillStyle = `rgba(0,0,0,${a})`; g.fillRect(0, 0, W, H); }
 
 function drawTitle() {
@@ -5387,29 +5168,6 @@ function drawHitFlash() {
   }
 }
 
-// THE CRACK DEATH (damage or The Portal): the screen freezes and cracks from
-// where you are, the cracks race outward, pieces start falling out... then
-// the death menu. (t = seconds since you died)
-function drawCrackDeath(t, px, py) {
-  if (!S.shatter) S.shatter = buildShatter(px, py, 0.55, 1.2);
-  const SH = S.shatter, shake = t < 0.15 ? 6 : Math.max(0, 2 - t * 2);
-  const L = 30 + Math.pow(Math.min(1, t / CRACK.spread), 0.7) * 640;        // how far the cracks have spread
-  g.fillStyle = '#000'; g.fillRect(0, 0, W, H);
-  g.save(); g.translate(rr(-shake, shake), rr(-shake, shake));
-  g.drawImage(SH.fr, 0, 0);
-  for (const c of SH.cells) {
-    if (c.rin >= L) continue;                                                // not cracked yet
-    let ox = c.ox, oy = c.oy, rot = 0;
-    if (t > c.fall) { const f = t - c.fall; ox += c.vx * f; oy += 320 * f * f; rot = c.spin * f * 3; }
-    g.fillStyle = '#000'; cellPath(c); g.fill();                             // the gap where it was
-    if (c.cy + oy - 40 > H * 1.5) continue;
-    drawCell(SH, c, ox, oy, rot, 1, false);
-  }
-  drawCracks(SH, L);
-  g.restore();
-  if (t < 0.05) { g.fillStyle = '#fff'; g.fillRect(0, 0, W, H); }           // the moment it breaks
-}
-
 function drawDead() {
   g.fillStyle = '#000'; g.fillRect(0, 0, W, H);                 // solid black — no muddy dimming
   // torn bands of solid glitch along the top and bottom edges
@@ -5430,6 +5188,288 @@ function drawDead() {
 }
 </script>
 <script>
+// V0ID3D — glass.js: THE DEATHS. Your screen is a pane of glass: it cracks, and then it explodes toward you in slow motion
+"use strict";
+
+// =====================================================================
+//  TIMELINES — every moment of the picture AND the sound (sound.js uses
+//  these same numbers), so they can never drift apart.
+//  (seconds since you died)
+//
+//  DEATH = time ran out:
+//   0.00  the screen freezes and CRACKS from where you are
+//   creaks  the cracks jump further; loose pieces fall back into the dark
+//   bulge   the glass bulges toward you, light leaks through the cracks
+//   still   dead still, dead silent
+//   drop    it EXPLODES toward you — in SLOW MOTION...
+//   +slow   ...then it speeds up (ramp) and the pieces rush past you
+//   lens    one last piece hits the camera: your lens cracks
+//   black   black. The last chord rings out.
+//  CRACK = your health ran out: the same, but faster and shorter
+// =====================================================================
+const DEATH = { creaks: [0.42, 0.66, 0.84], spread: 0, bulge: 0.98, still: 1.38, drop: 1.45, slow: 1.0, ramp: 0.5, lens: 3.1, black: 3.3, end: 3.95 };
+const CRACK = { creaks: [], spread: 0.42, bulge: 0.42, still: 0.66, drop: 0.7, slow: 0.55, ramp: 0.35, lens: 1.95, black: 2.12, end: 2.6 };
+const SLOWMO = 0.16;                     // how fast time runs in the slow motion (0.16 = about 6x slower)
+
+// "explosion time": how far the explosion has got. It runs at SLOWMO speed,
+// then speeds up smoothly to normal speed over T.ramp seconds.
+// (the speed goes up in a straight line, so the distance is a curve — that's
+// the ½·a·t² from physics class)
+function boomTime(u, T) {
+  if (u <= 0) return 0;
+  if (u < T.slow) return u * SLOWMO;
+  const v = u - T.slow, base = T.slow * SLOWMO;
+  if (v < T.ramp) return base + SLOWMO * v + 0.5 * (1 - SLOWMO) * v * v / T.ramp;
+  return base + SLOWMO * T.ramp + 0.5 * (1 - SLOWMO) * T.ramp + (v - T.ramp);
+}
+// how fast it's running right now (0.16 ... 1) — the sound follows this exactly
+function boomSpeed(u, T) {
+  if (u < T.slow) return SLOWMO;
+  return Math.min(1, SLOWMO + (1 - SLOWMO) * (u - T.slow) / T.ramp);
+}
+
+// =====================================================================
+//  BUILDING THE GLASS. A spiderweb is two kinds of crack: lines shooting
+//  OUT from the hit, and rings going AROUND it. Where they cross they cut
+//  the glass into 4-sided pieces — and each of those cracks once more,
+//  corner to corner, into 2 sharp TRIANGLES. ~500 pieces.
+// =====================================================================
+const GLASS_RINGS = [0, 6, 14, 26, 42, 64, 94, 135, 190, 265, 370, 520, 740];
+function buildGlass(ix, iy) {
+  const fr = makeCanvas(W, H); fr.getContext('2d').drawImage(cv, 0, 0);   // freeze the screen as it was
+  const pat = g.createPattern(fr, 'no-repeat');
+  const N = ri(17, 21), a0 = rnd() * 6.283, rad = [];
+  for (let i = 0; i < N; i++) {                          // each line out = a wobbly row of points
+    const a = a0 + (i + rr(-0.3, 0.3)) / N * 6.283, pts = [];
+    for (const r0 of GLASS_RINGS) {
+      const r = r0 * rr(0.85, 1.15), aj = a + rr(-0.07, 0.07);
+      pts.push([ix + Math.cos(aj) * r, iy + Math.sin(aj) * r * 0.92]);
+    }
+    rad.push(pts);
+  }
+  const dmax = Math.hypot(W, H) * 0.75, tris = [], diags = [];
+  for (let i = 0; i < N; i++) for (let j = 0; j < GLASS_RINGS.length - 1; j++) {
+    const A = rad[i], B = rad[(i + 1) % N];
+    const q = [A[j], A[j + 1], B[j + 1], B[j]];
+    const flipD = rnd() < 0.5;                            // which corner-to-corner crack
+    const halves = j === 0 ? [[q[0], q[1], q[2]]]          // (the middle ones are already triangles)
+      : flipD ? [[q[0], q[1], q[2]], [q[0], q[2], q[3]]] : [[q[0], q[1], q[3]], [q[1], q[2], q[3]]];
+    if (j > 0) diags.push(flipD ? [q[0], q[2], GLASS_RINGS[j]] : [q[1], q[3], GLASS_RINGS[j]]);
+    for (const poly of halves) {
+      const cx = (poly[0][0] + poly[1][0] + poly[2][0]) / 3, cy = (poly[0][1] + poly[1][1] + poly[2][1]) / 3;
+      const dx = cx - ix, dy = cy - iy, d = Math.hypot(dx, dy) || 1, near = 1 - Math.min(1, d / dmax);
+      tris.push({
+        poly, cx, cy, rin: GLASS_RINGS[j],
+        // the explosion: out from the hit, and TOWARD YOU (z). The middle comes fastest.
+        dx: dx / d, dy: dy / d, spd: rr(40, 150) * (0.6 + near), vz: rr(0.9, 1.9) * (0.55 + near * 0.9),
+        spin: rr(-5, 5),                                  // turning flat on the screen
+        tilt: rr(0, 6.283), tiltSp: rr(5, 16) * (rnd() < 0.5 ? -1 : 1), axis: rr(0, 3.1416),   // tumbling in 3D
+        // some pieces come loose early and fall BACK into the dark
+        fall: j >= 3 && rnd() < 0.16 ? 1 : 0,
+        shiny: rnd() < 0.3,
+      });
+    }
+  }
+  const dust = [];                                        // fine glass dust for the explosion
+  for (let i = 0; i < 260; i++) {
+    const a = rnd() * 6.283, r = Math.pow(rnd(), 0.6) * 240;
+    dust.push({ x: ix + Math.cos(a) * r, y: iy + Math.sin(a) * r * 0.9, dx: Math.cos(a), dy: Math.sin(a), spd: rr(60, 260), vz: rr(0.5, 2.2),
+                s: rnd() < 0.15 ? 2 : 1, red: rnd() < 0.35, tw: rr(0, 6.283) });
+  }
+  return { fr, pat, ix, iy, rad, N, tris, diags, dust, lens: null };
+}
+
+// when each loose piece falls out: on a creak (time-out death), or spread over the cracking (HP death)
+function glassFallTimes(SH, T) {
+  for (const c of SH.tris) if (c.fall) {
+    c.fallT = T.creaks.length ? T.creaks[ri(0, T.creaks.length - 1)] + rr(0, 0.12) : rr(0.1, T.still - 0.05);
+    c.fallT = Math.max(c.fallT, glassReachTime(c.rin, T) + 0.05);   // (it can't fall out before it's cracked)
+  }
+}
+// how far the cracks have spread (pixels from the hit)
+function glassReach(t, T) {
+  if (T.creaks.length) {                                  // time-out: a jump on the hit and on each creak
+    let L = 60 + Math.min(1, t / 0.12) * 40;
+    T.creaks.forEach((c, i) => { if (t >= c) L = 100 + (i + 1) * 120 + Math.min(1, (t - c) / 0.1) * 40; });
+    if (t >= T.bulge) L = Math.max(L, 520 + (t - T.bulge) * 600);
+    return L;
+  }
+  return 30 + Math.pow(Math.min(1, t / T.spread), 0.6) * 760;   // HP death: one fast race out
+}
+function glassReachTime(r, T) {                           // the first moment a ring is cracked
+  for (let t = 0; t < T.drop; t += 0.01) if (glassReach(t, T) > r) return t;
+  return T.drop;
+}
+
+// =====================================================================
+//  DRAWING ONE PIECE. The trick for 3D on a flat screen:
+//   - PERSPECTIVE: a piece at depth z looks 1/(1 - z) times bigger and
+//     further from the middle (z = 0 is the screen, z -> 1 is your eye).
+//   - TUMBLING: squash it along an axis by cos(tilt). When it's edge-on
+//     (cos = 0) it's a thin sliver — that sells the spin.
+//   - LIGHT: when its face turns toward the light it flashes white (a
+//     "glint"), edge-on it goes dark.
+//  The picture on it is the frozen screen (a pattern), so we just move the
+//  canvas and fill the triangle — no clipping needed.
+// =====================================================================
+function drawGlassPiece(SH, c, ox, oy, z, rot, tilt, alpha) {
+  const p = 1 / (1 - z);                                   // perspective size
+  const sx = W / 2 + (c.cx + ox - W / 2) * p, sy = H / 2 + (c.cy + oy - H / 2) * p;
+  const ct = Math.cos(tilt), sq = Math.abs(ct) < 0.06 ? 0.06 * Math.sign(ct || 1) : ct;
+  g.save();
+  g.globalAlpha = alpha;
+  g.translate(sx, sy); g.rotate(c.axis); g.scale(p * sq, p); g.rotate(rot - c.axis); g.translate(-c.cx, -c.cy);
+  g.beginPath(); g.moveTo(c.poly[0][0], c.poly[0][1]); g.lineTo(c.poly[1][0], c.poly[1][1]); g.lineTo(c.poly[2][0], c.poly[2][1]); g.closePath();
+  g.fillStyle = SH.pat; g.fill();
+  // (a high power = the glint only happens in a narrow moment of the spin — a FLASH, not a white piece)
+  const face = Math.abs(ct), glint = Math.pow(Math.max(0, Math.cos(tilt - 0.8)), 60);
+  if (face < 0.7) { g.globalAlpha = alpha * (0.7 - face) * 0.6; g.fillStyle = '#000'; g.fill(); }     // turned away = darker
+  if (glint > 0.03) { g.globalAlpha = alpha * glint * 0.6; g.fillStyle = '#fff'; g.fill(); }          // facing the light = GLINT
+  g.globalAlpha = alpha * (c.shiny || glint > 0.3 ? 1 : 0.55);
+  g.strokeStyle = glint > 0.3 || c.shiny ? '#fff' : '#ff0000';
+  g.lineWidth = 1 / Math.max(0.3, p * Math.abs(sq)); g.stroke();                                    // the sharp glass edge
+  g.restore();
+}
+
+// the cracks: thick pure red with a thin white line on top. heat = how much
+// light leaks through them (0..1): brighter, thicker, whiter
+function drawGlassCracks(SH, L, heat, zoom) {
+  const seg = [];
+  for (let i = 0; i < SH.N; i++) {
+    const P = SH.rad[i], Q = SH.rad[(i + 1) % SH.N];
+    for (let j = 0; j < GLASS_RINGS.length - 1; j++) {
+      if (GLASS_RINGS[j] >= L) break;
+      const f = Math.min(1, (L - GLASS_RINGS[j]) / (GLASS_RINGS[j + 1] - GLASS_RINGS[j]));   // a crack still growing
+      seg.push([P[j], [lerp(P[j][0], P[j + 1][0], f), lerp(P[j][1], P[j + 1][1], f)]]);
+      if (j > 0 && GLASS_RINGS[j] * 1.25 < L) seg.push([P[j], Q[j]]);                        // ring pieces
+    }
+  }
+  const diag = SH.diags.filter(d => d[2] * 1.6 < L);
+  g.save();
+  g.translate(SH.ix, SH.iy); g.scale(zoom, zoom); g.translate(-SH.ix, -SH.iy);
+  const path = list => { g.beginPath(); for (const [a, b] of list) { g.moveTo(a[0], a[1]); g.lineTo(b[0], b[1]); } };
+  path(seg);
+  g.strokeStyle = '#ff0000'; g.lineWidth = 3 + heat * 3; g.stroke();
+  g.strokeStyle = '#fff'; g.lineWidth = 1 + heat; g.stroke();
+  path(diag);                                              // the finer corner-to-corner cracks
+  g.globalAlpha = 0.45 + heat * 0.35; g.strokeStyle = '#ff0000'; g.lineWidth = 1; g.stroke();
+  g.globalAlpha = 1;
+  for (let i = 0; i < 30; i++) {                           // crushed glass right where it hit
+    const a = hash2(i, 1, 81) * 6.283, d = hash2(i, 2, 81) * 10;
+    g.fillStyle = hash2(i, 3, 81) < 0.6 ? '#fff' : '#ff0000';
+    g.fillRect(Math.round(SH.ix + Math.cos(a) * d), Math.round(SH.iy + Math.sin(a) * d), 1 + (i % 2), 1);
+  }
+  g.restore();
+}
+
+// the LENS crack: one piece hit the camera — a small spiderweb right on your screen
+function makeLensCrack() {
+  const lx = W / 2 + rr(-110, 110), ly = H / 2 + rr(-60, 60), lines = [];
+  const n = ri(9, 12), a0 = rnd() * 6.283;
+  for (let i = 0; i < n; i++) {
+    let a = a0 + i / n * 6.283 + rr(-0.2, 0.2), x = lx, y = ly; const pts = [[x, y]];
+    for (let s = 0, m = ri(4, 7); s < m; s++) { a += rr(-0.35, 0.35); const st = rr(14, 40); x += Math.cos(a) * st; y += Math.sin(a) * st; pts.push([x, y]); }
+    lines.push(pts);
+  }
+  for (const r of [10, 26]) {                              // two rings around the hit
+    const pts = []; for (let i = 0; i <= 14; i++) { const a = i / 14 * 6.283; pts.push([lx + Math.cos(a) * r * rr(0.8, 1.2), ly + Math.sin(a) * r * rr(0.8, 1.2)]); }
+    lines.push(pts);
+  }
+  return { lx, ly, lines };
+}
+
+// =====================================================================
+//  THE WHOLE DEATH, one frame. T = which timeline (DEATH or CRACK)
+// =====================================================================
+function drawGlassDeath(t, T, px, py) {
+  if (!S.shatter) { S.shatter = buildGlass(px ?? W / 2, py ?? H / 2); glassFallTimes(S.shatter, T); }
+  const SH = S.shatter;
+  if (t >= T.black) {                                      // the end: black (the lens crack fades on it)
+    g.fillStyle = '#000'; g.fillRect(0, 0, W, H);
+    if (SH.lens) { g.globalAlpha = Math.max(0, 1 - (t - T.black) / 0.35); drawLens(SH.lens, 1); g.globalAlpha = 1; }
+    return;
+  }
+  const u = t - T.drop, bt = boomTime(u, T), dropped = u >= 0;
+  const L = glassReach(Math.min(t, T.drop), T);
+  // light leaking through the cracks: grows during the bulge, held in the silence
+  const heat = t < T.bulge ? 0 : Math.min(1, (t - T.bulge) / (T.still - T.bulge));
+  const zoom = dropped ? 1 : 1 + heat * 0.07;               // the glass bulges toward you
+  // --- camera shake ---
+  let kick = Math.exp(-t * 14) * 9;                        // the hit
+  for (const c of T.creaks) if (t >= c) kick = Math.max(kick, Math.exp(-(t - c) * 16) * 7);
+  const still = t >= T.still && !dropped;
+  const shake = still ? 0 : dropped ? (u < 0.12 ? 8 : 0.6) : kick + heat * 2;
+  const shx = rr(-shake, shake), shy = rr(-shake, shake);
+
+  g.fillStyle = '#000'; g.fillRect(0, 0, W, H);           // behind the glass: nothing but black
+  g.save(); g.translate(shx, shy);
+  if (!dropped) {
+    // BEFORE THE DROP: the frozen screen, with pieces falling out of it
+    g.save(); g.translate(SH.ix, SH.iy); g.scale(zoom, zoom); g.translate(-SH.ix, -SH.iy);
+    g.drawImage(SH.fr, 0, 0);
+    for (const c of SH.tris) if (c.fall && t > c.fallT) { g.fillStyle = '#000'; g.beginPath(); g.moveTo(...c.poly[0]); g.lineTo(...c.poly[1]); g.lineTo(...c.poly[2]); g.fill(); }
+    g.restore();
+    for (const c of SH.tris) if (c.fall && t > c.fallT) {
+      const f = t - c.fallT, z = -f * f * 2.2;              // falling AWAY from you (z < 0 = smaller)
+      if (z < -5) continue;
+      drawGlassPiece(SH, c, c.dx * f * 12, c.dy * f * 12 + f * f * 40, z, c.spin * f * 0.5, c.tilt + c.tiltSp * f * 0.6, Math.max(0, 1 + z * 0.25));
+    }
+    drawGlassCracks(SH, L, heat, zoom);
+  } else {
+    // THE EXPLOSION: every piece flies at you. Draw the FAR ones first, so
+    // the near ones cover them (that's how depth works — painter's algorithm)
+    const list = [];
+    for (const c of SH.tris) {
+      if (c.fall && c.fallT < T.drop) continue;            // (already fell into the dark)
+      const z = Math.min(0.985, c.vz * bt);
+      if (z > 0.96) continue;                              // flew past you
+      list.push([z, c]);
+    }
+    list.sort((a, b) => a[0] - b[0]);
+    for (const [z, c] of list) {
+      const out = c.spd * bt;
+      drawGlassPiece(SH, c, c.dx * out, c.dy * out, z, c.spin * bt, c.tilt + c.tiltSp * bt, 1);
+    }
+    // glass dust, twinkling as it tumbles past
+    for (const d of SH.dust) {
+      const z = d.vz * bt; if (z > 0.95) continue;
+      const p = 1 / (1 - z), x = W / 2 + (d.x + d.dx * d.spd * bt - W / 2) * p, y = H / 2 + (d.y + d.dy * d.spd * bt - H / 2) * p;
+      if (x < -4 || y < -4 || x > W + 4 || y > H + 4) continue;
+      const tw = Math.sin(d.tw + bt * 40);
+      g.fillStyle = tw > 0.6 ? '#fff' : d.red ? '#ff0000' : '#8c8c96';
+      const s = Math.max(1, Math.round(d.s * p * 0.8)); g.fillRect(Math.round(x), Math.round(y), s, s);
+    }
+  }
+  g.restore();
+  bloom(dropped ? 0.9 : 0.5 + heat * 0.8);                 // glowing cracks + glints
+  if (dropped && u < 0.05) { g.fillStyle = '#fff'; g.fillRect(0, 0, W, H); }   // the flash of the drop
+  else if (dropped && u < 0.35) colorFringe(ri(3, 7) * (rnd() < 0.5 ? -1 : 1));
+  // THE LENS: the last piece hits the camera
+  if (t >= T.lens) {
+    if (!SH.lens) SH.lens = makeLensCrack();
+    const v = t - T.lens;
+    if (v < 0.04) { g.fillStyle = '#fff'; g.fillRect(0, 0, W, H); }
+    drawLens(SH.lens, Math.min(1, v / 0.06));
+  }
+}
+function drawLens(Lc, grow) {
+  g.save(); g.lineJoin = 'round';
+  for (const [w, col] of [[3, '#ff0000'], [1, '#fff']]) {
+    g.strokeStyle = col; g.lineWidth = w; g.beginPath();
+    for (const pts of Lc.lines) {
+      const n = Math.max(2, Math.ceil(pts.length * grow));
+      pts.slice(0, n).forEach(([x, y], i) => i ? g.lineTo(x, y) : g.moveTo(x, y));
+    }
+    g.stroke();
+  }
+  g.restore();
+}
+
+// the two deaths (called from render)
+function drawJumpscare(t, px, py) { drawGlassDeath(t, DEATH, px, py); }
+function drawCrackDeath(t, px, py) { drawGlassDeath(t, CRACK, px, py); }
+</script>
+<script>
 // V0ID3D — main.js: render() (draws each frame), keyboard/mouse input and the game loop — loaded LAST
 "use strict";
 
@@ -5448,7 +5488,9 @@ function render() {
   // the death menu and the crack death (once its glass is made) cover the
   // whole screen — so don't waste time drawing the world underneath
   if (S.mode === 'dead') { drawDead(); drawDevFlash(); return; }
-  if (S.mode === 'cracking' && S.shatter) { drawCrackDeath(S.crackT); return; }   // (the glass is already made, so no position needed)
+  // (once the glass is made, the deaths draw everything themselves — no world needed)
+  if (S.mode === 'cracking' && S.shatter) { drawCrackDeath(S.crackT); return; }
+  if (S.mode === 'dying' && S.shatter) { drawJumpscare(S.dieT); return; }
   const k = glitchK(), late = lateV();
   const sh = S.shake + (S.mode === 'play' ? late * late * 3 + S.rift * S.rift * 2.5 * (1 - S.pure) : 0);
   const camX = Math.round(cam.x - W / 2 + rr(-sh, sh)), camY = Math.round(cam.y - H / 2 + rr(-sh, sh));
@@ -5505,8 +5547,9 @@ function render() {
   // zoom in on you while you're grabbed (and on the jumpscare's first frame,
   // so the frozen "glass" it cracks is the zoomed view — no jump)
   if (S.mode === 'grabbed') drawGrabbedPlayer(Math.round(player.x - camX), Math.round(player.y - camY), 'over');
-  if (player && (S.mode === 'grabbed' || (S.mode === 'dying' && !S.shatter))) grabZoom(player.x - camX, player.y - camY);
-  if (S.mode === 'dying') drawJumpscare(S.dieT);
+  let hit = null;
+  if (player && (S.mode === 'grabbed' || (S.mode === 'dying' && !S.shatter))) hit = grabZoom(player.x - camX, player.y - camY);
+  if (S.mode === 'dying') drawJumpscare(S.dieT, ...(hit || [W / 2, H / 2]));
   if (S.mode === 'cracking') drawCrackDeath(S.crackT, player.x - camX, player.y - camY);
   if (S.hitFlash > 0 && S.mode === 'play') drawHitFlash();
   if (S.core > 0.01 && (S.mode === 'play' || S.mode === 'paused' || S.mode === 'warping')) drawPortalTunnel(S.core, player.x - camX, player.y - camY);
