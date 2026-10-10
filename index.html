@@ -73,7 +73,7 @@ const CFG = {
 //  reloads into the new version. build-site.js stamps a real number in here
 //  for the website; 'dev' (your own copy) never checks.
 // =====================================================================
-const BUILD_ID = '20261010192824';
+const BUILD_ID = '20261010193623';
 function checkForUpdate(then = null, resume = null) {
   if (BUILD_ID === 'dev' || location.protocol === 'file:') { if (then) then(); return; }
   if (S.checking) return;
@@ -2589,7 +2589,9 @@ function glowStroke(tracePath, maxW, strength, color = '#ff0000', N = 14) {
 // 14 huge full-size strokes every frame was the biggest cause of lag.
 const glowC = document.createElement('canvas'), gcx = glowC.getContext('2d');
 const glowC2 = document.createElement('canvas'), gcx2 = glowC2.getContext('2d');
-function glowLine(pts, ox, oy, maxW, strength, color = '#ff0000') {
+// pixel = true: the glow is drawn as chunky 8x8 BLOCKS (no smoothing) and
+// without the smooth bright line — for the pixel-virus time-out wall
+function glowLine(pts, ox, oy, maxW, strength, color = '#ff0000', pixel = false) {
   const w4 = Math.ceil(W / 4), h4 = Math.ceil(H / 4);
   if (glowC.width !== w4 || glowC.height !== h4) { glowC.width = w4; glowC.height = h4; glowC2.width = Math.ceil(W / 8); glowC2.height = Math.ceil(H / 8); }
   gcx.setTransform(1, 0, 0, 1, 0, 0); gcx.clearRect(0, 0, w4, h4);
@@ -2600,8 +2602,9 @@ function glowLine(pts, ox, oy, maxW, strength, color = '#ff0000') {
   gcx.globalAlpha = 1; gcx.lineWidth = maxW * 0.2; gcx.stroke();            // narrower + brighter
   gcx2.clearRect(0, 0, glowC2.width, glowC2.height); gcx2.imageSmoothingEnabled = true; gcx2.imageSmoothingQuality = 'high';
   gcx2.drawImage(glowC, 0, 0, glowC2.width, glowC2.height);
-  g.save(); g.imageSmoothingEnabled = true; g.globalCompositeOperation = 'lighter';
+  g.save(); g.imageSmoothingEnabled = !pixel; g.globalCompositeOperation = 'lighter';
   g.globalAlpha = Math.min(1, 1.25 * strength); g.drawImage(glowC2, 0, 0, W, H);   // the wide soft glow (ONE full-screen draw)
+  if (pixel) { g.restore(); return; }
   g.strokeStyle = color;                                                          // + a tighter glow and a bright core, as cheap lines
   g.beginPath(); pts.forEach(([x, y], i) => i ? g.lineTo(x + ox, y + oy) : g.moveTo(x + ox, y + oy)); g.closePath();
   g.lineWidth = 12; g.globalAlpha = 0.14 * strength; g.stroke();
@@ -4664,10 +4667,17 @@ function edgeCorruption(L, px = W / 2, py = H / 2) {
       const a = i / 160 * 6.283 - 3.1416, m = tunnelM(a);
       outline.push([cx + Math.cos(a) * ax * m, cy + Math.sin(a) * by * m]);
     }
-    glowLine(outline, 0, 0, 150, Math.min(1, 0.35 + L * 1.3) * fin);
+    glowLine(outline, 0, 0, 150, Math.min(1, 0.35 + L * 1.3) * fin, '#ff0000', true);   // (pixel glow: chunky blocks)
   }
 
-  // 2) LIGHTNING REACHING FOR YOU. Each bolt starts on the tunnel wall and
+  // 2) THE INFECTED WALL — everything outside the broken outline gets eaten.
+  //    It's built from a grid of 4x4 PIXEL BLOCKS (see infectWall), so it
+  //    bites in from every side in blocky chunks, grows colonies ahead of
+  //    itself, crumbles into pixels at its edge, and sends crawlers in.
+  infectWall(L, ax, by, cx, cy, fin);
+
+  // 3) LIGHTNING REACHING FOR YOU (drawn AFTER the wall, so it never hides
+  //    them). Each bolt starts on the tunnel wall and
   //    stretches toward you — a bit closer every second as time runs out.
   //    When the timer hits zero, they GRAB you (each one onto a piece of you).
   if (L > 0.12 && ax > 1) {
@@ -4694,45 +4704,147 @@ function edgeCorruption(L, px = W / 2, py = H / 2) {
     drawBolts(bolts, 0, 0);
   }
 
-  // 3) the torn wall: everything outside the broken outline gets eaten
-  const fq = Math.floor(S.t * 14);
-  g.beginPath();
-  for (let y = 0; y < H; y++) {
-    const dy = by > 0 ? (y - cy) / by : 9;
-    const row = y >> 1;                                   // pieces are 2 pixels tall
-    const n1 = hash2(row, fq, 11), n2 = hash2(row, fq, 12);
-    const jl = (n1 - 0.3) * (8 + L * 24) * (n1 > 0.93 ? 3 : 1);
-    const jr = (n2 - 0.3) * (8 + L * 24) * (n2 > 0.93 ? 3 : 1);
-    // how far out the wall is on this row, on one side (-1 = left, 1 = right)
-    const reach = side => {
-      if (Math.abs(dy) >= 1.4) return 0;
-      const base = Math.sqrt(Math.max(0, 1 - dy * dy));
-      const m = tunnelM(Math.atan2(dy, side * Math.max(base, 0.05))), dyp = dy / m;
-      return Math.abs(dyp) >= 1 ? 0 : ax * m * Math.sqrt(1 - dyp * dyp);
-    };
-    const hl = reach(-1), hr = reach(1);
-    if (hl <= 0 && hr <= 0) { g.rect(0, y, W, 1); continue; }
-    const l = cx - hl + jl, r = cx + hr - jr;
-    if (l > 0) g.rect(0, y, l, 1);
-    if (r < W) g.rect(r, y, W - r, 1);
-  }
-  // the wall picks a new tile + position 12 times a second (not every frame,
-  // so it crackles instead of turning into a blur).
-  // (the wall's shape is FILLED directly with the tile pattern — faster than
-  // cutting it out with clip() and then painting the whole screen through it)
-  // (the SIMPLE wall: only lines, squares and rectangles — no rings, letters or triangles)
-  const wf = Math.floor(S.t * 12), wp = WALL_SIMPLE[wf % WALL_SIMPLE.length];
-  const wm = new DOMMatrix().translate((hash2(wf, 1, 21) * TILE) | 0, (hash2(wf, 2, 21) * TILE) | 0);
-  wp.setTransform(wm);
-  g.fillStyle = wp; g.fill();
-  const gp = WALL_SIMPLE_GLOW[wf % WALL_SIMPLE.length]; gp.setTransform(wm);             // the white bits GLOW
-  g.save(); g.globalCompositeOperation = 'lighter'; g.globalAlpha = 0.6; g.fillStyle = gp; g.fill(); g.restore();
 
   // 4) glitch pieces breaking off the wall — some fly far in
   const pieces = Math.round((10 + L * 110) * fin);
   for (let i = 0; i < pieces; i++) {
     const a = rnd() * 6.283 - 3.1416, m = tunnelM(a), f = 1.02 - Math.pow(rnd(), 2) * 0.5;
     glitchPiece(Math.round(cx + Math.cos(a) * ax * m * f), Math.round(cy + Math.sin(a) * by * m * f), rnd() < L ? 2 : 1, true);
+  }
+}
+
+// =====================================================================
+//  THE INFECTED WALL (the time-out effect's edge). The screen is split
+//  into a grid of 4x4-pixel CELLS, and each cell is either eaten (wall)
+//  or not. A cell gets eaten when it's far enough out from the middle —
+//  but "far enough" changes from place to place and moment to moment:
+//   - COLONIES: 16x16 patches that are more infected than their
+//     neighbours. They swell, so islands of infection appear AHEAD of the
+//     wall and then merge into it — that's what makes it spread like a virus.
+//   - BITES: every cell also gets a little random extra 8 times a second,
+//     so the edge chews back and forth in blocky steps.
+//  Then:
+//   - the cells right ON the edge only fill some of their 2x2 pixels = the
+//     edge crumbles into pixels instead of being a clean line
+//   - a 1-pixel MEMBRANE traces the edge (red, with white pixels marching along it)
+//   - CRAWLERS: trails of pixels creep inward, turning only at right angles
+//   - DATAMOSH: chunks of the picture next to the edge slip sideways
+// =====================================================================
+const EC = 4;                                            // cell size (pixels)
+let edgeGrid = null, edgeCols = 0, edgeRows = 0;
+const edgeMaskC = document.createElement('canvas'), emx = edgeMaskC.getContext('2d');   // the wall's mask (1 pixel = 2x2 on screen)
+const edgeWallC = document.createElement('canvas'), ewx = edgeWallC.getContext('2d');   // the wall, cut out by the mask
+let edgeMaskImg = null, edgeMask32 = null;
+const EDGE_M = new Float32Array(512), EDGE_COL = new Float32Array(64 * 64);
+function infectWall(L, ax, by, cx, cy, fin) {
+  const cols = Math.ceil(W / EC), rows = Math.ceil(H / EC);
+  if (cols !== edgeCols || rows !== edgeRows) { edgeCols = cols; edgeRows = rows; edgeGrid = new Uint8Array(cols * rows); }
+  const G = edgeGrid, tq = Math.floor(S.t * 8), tc = Math.floor(S.t * 14);
+  const swell = Math.floor(S.t * 2);                     // colonies change size twice a second
+  const amp = (0.12 + L * 0.3) * fin;                    // how far ahead of the wall infection can reach
+  // 1) which cells are eaten?
+  //    (SPEED: the wall's wobbly shape is worked out for 512 directions once,
+  //    and each colony once — not again for every one of the 14,000 cells)
+  for (let k = 0; k < 512; k++) EDGE_M[k] = tunnelM(k / 512 * 6.2832 - 3.1416);
+  const bc = (cols >> 2) + 1, br = (rows >> 2) + 1;
+  for (let bj = 0; bj < br; bj++) for (let bi = 0; bi < bc; bi++) {
+    const colony = hash2(bi, bj, 31) * (0.6 + 0.4 * hash2(bi, bj, swell + 77));
+    EDGE_COL[bj * 64 + bi] = amp * colony * colony * 1.6;          // how far ahead of the wall this colony reaches
+  }
+  for (let j = 0; j < rows; j++) for (let i = 0; i < cols; i++) {
+    let wall = 1;
+    if (ax > 1 && by > 1) {
+      const nx = (i * EC + EC / 2 - cx) / ax, ny = (j * EC + EC / 2 - cy) / by, r = Math.hypot(nx, ny);
+      if (r < 0.47 - amp * 1.6) wall = 0;                 // clearly inside (the wobbles never come in that far)
+      else if (r < 1.45) {                               // (further out than 1.45 = clearly wall)
+        const d = r / EDGE_M[((Math.atan2(ny, nx) + 3.1416) / 6.2832 * 512 | 0) & 511];
+        // + BITES: a random extra per cell, and per 8x8 chunk, 8 times a second
+        wall = d > 1 - EDGE_COL[(j >> 2) * 64 + (i >> 2)] - 0.06 * hash2(i, j, tq) - 0.07 * hash2(i >> 1, j >> 1, tq + 999) ? 1 : 0;
+      }
+    }
+    G[j * cols + i] = wall;
+  }
+  const at = (i, j) => i < 0 || j < 0 || i >= cols || j >= rows ? 1 : G[j * cols + i];
+  // 2) fill the wall. FAST WAY: don't draw thousands of little squares —
+  //    write a tiny MASK picture instead (1 mask pixel = 2x2 screen pixels,
+  //    see-through = open, solid = wall), then: paint the glitch pattern over
+  //    a whole screen-sized canvas, keep only where the mask is solid
+  //    ('destination-in'), and stamp that on the screen. Always 3 big draws,
+  //    no matter how ragged the edge is.
+  const mw = cols * 2, mh = rows * 2;
+  if (!edgeMaskImg || edgeMaskC.width !== mw || edgeMaskC.height !== mh) {
+    edgeMaskC.width = mw; edgeMaskC.height = mh; edgeMaskImg = emx.createImageData(mw, mh);
+    edgeMask32 = new Uint32Array(edgeMaskImg.data.buffer);
+  }
+  const M = edgeMask32, edges = [];
+  M.fill(0);
+  for (let j = 0; j < rows; j++) for (let i = 0; i < cols; i++) {
+    if (!G[j * cols + i]) continue;
+    const edge = !at(i - 1, j) || !at(i + 1, j) || !at(i, j - 1) || !at(i, j + 1);
+    if (edge) edges.push(i, j);
+    for (let q = 0; q < 4; q++)                          // the crumbling edge: on an edge cell each 2x2 pixel is there or not
+      if (!edge || hash2(i * 4 + q, j, tc) < 0.62) M[(j * 2 + (q >> 1)) * mw + i * 2 + (q & 1)] = 0xffffffff;
+  }
+  emx.putImageData(edgeMaskImg, 0, 0);
+  if (edgeWallC.width !== W || edgeWallC.height !== H) { edgeWallC.width = W; edgeWallC.height = H; }
+  const wf = Math.floor(S.t * 12), wp = WALL_SIMPLE[wf % WALL_SIMPLE.length];   // (only lines, squares and rectangles)
+  const wm = new DOMMatrix().translate((hash2(wf, 1, 21) * TILE) | 0, (hash2(wf, 2, 21) * TILE) | 0);
+  const gp = WALL_SIMPLE_GLOW[wf % WALL_SIMPLE.length];
+  wp.setTransform(wm); gp.setTransform(wm);
+  ewx.globalCompositeOperation = 'copy'; ewx.globalAlpha = 1; ewx.fillStyle = wp; ewx.fillRect(0, 0, W, H);
+  ewx.globalCompositeOperation = 'lighter'; ewx.globalAlpha = 0.6; ewx.fillStyle = gp; ewx.fillRect(0, 0, W, H);   // the white bits GLOW
+  ewx.globalCompositeOperation = 'destination-in'; ewx.globalAlpha = 1; ewx.imageSmoothingEnabled = false;
+  ewx.drawImage(edgeMaskC, 0, 0, mw * 2, mh * 2);
+  g.drawImage(edgeWallC, 0, 0);
+
+  // 3) the MEMBRANE: a 2-pixel line on every side of an edge cell that faces the open middle
+  const red = new Path2D(), white = new Path2D(), march = Math.floor(S.t * 20);
+  for (let k = 0; k < edges.length; k += 2) {
+    const i = edges[k], j = edges[k + 1], x = i * EC, y = j * EC;
+    const open = !at(i - 1, j) + !at(i + 1, j) + !at(i, j - 1) + !at(i, j + 1);
+    if (open >= 3) continue;                             // (a lone cell with a border all round would look like a little ring)
+    const p = (i + j + march) % 5 === 0 ? white : red;   // white pixels marching along it
+    if (!at(i - 1, j)) p.rect(x - 2, y, 2, EC);
+    if (!at(i + 1, j)) p.rect(x + EC, y, 2, EC);
+    if (!at(i, j - 1)) p.rect(x, y - 2, EC, 2);
+    if (!at(i, j + 1)) p.rect(x, y + EC, EC, 2);
+  }
+  g.globalAlpha = fin; g.fillStyle = '#ff0000'; g.fill(red); g.fillStyle = '#fff'; g.fill(white); g.globalAlpha = 1;
+
+  // 4) CRAWLERS: pixel trails creeping inward from the wall. Each one is the
+  //    same path every frame (its turns come from a seed), it just gets
+  //    LONGER — so it looks like it's growing. Every 2.5 s they start over somewhere new.
+  if (ax > 1 && L > 0.05) {
+    const epoch = Math.floor(S.t / 2.5), grow = (S.t / 2.5) % 1;
+    const n = Math.round(10 + L * 22);
+    for (let c = 0; c < n; c++) {
+      const sd = c * 131 + epoch * 7919;
+      const a = hash2(sd, 1, 91) * 6.283, m = tunnelM(a);
+      let x = Math.round((cx + Math.cos(a) * ax * m) / 2) * 2, y = Math.round((cy + Math.sin(a) * by * m) / 2) * 2;
+      const inx = -Math.cos(a), iny = -Math.sin(a);        // the way in
+      const len = Math.floor((18 + hash2(sd, 2, 91) * 45) * (0.4 + L) * Math.min(1, grow * 1.6));
+      let dx = Math.abs(inx) > Math.abs(iny) ? Math.sign(inx) * 2 : 0, dy = dx ? 0 : Math.sign(iny) * 2;
+      for (let s = 0; s < len; s++) {
+        const h = hash2(sd, s, 92);
+        if (h < 0.22) {                                     // turn — at a right angle, mostly toward the middle
+          if (dx) { dy = (hash2(sd, s, 93) < 0.5 + iny * 0.4 ? 2 : -2); dx = 0; }
+          else { dx = (hash2(sd, s, 93) < 0.5 + inx * 0.4 ? 2 : -2); dy = 0; }
+        } else if (h > 0.9) {                               // ...or swing back toward the middle
+          if (Math.abs(inx) > Math.abs(iny)) { dx = Math.sign(inx) * 2; dy = 0; } else { dy = Math.sign(iny) * 2; dx = 0; }
+        }
+        x += dx; y += dy;
+        if (hash2(sd + s, tc, 94) < 0.12) continue;         // some pixels flicker out
+        g.fillStyle = s === len - 1 ? (tc % 2 ? '#fff' : '#ff0000') : hash2(sd, s, 95) < 0.15 ? '#000' : '#ff0000';
+        g.fillRect(x, y, 2, 2);
+        if (s === len - 1) { g.fillStyle = '#fff'; g.fillRect(x - dy / 2, y - dx / 2, 1, 1); }   // a bright speck by the head
+      }
+    }
+  }
+
+  // 5) DATAMOSH: a few blocks of the picture right at the edge slip sideways
+  for (let k = 0, n = Math.round((1 + L * 3) * fin); k < n && edges.length; k++) {
+    const e = ri(0, edges.length / 2 - 1) * 2, x = edges[e] * EC, y = edges[e + 1] * EC;
+    moveRegion(x - ri(4, 16), y - ri(0, 4), ri(12, 40), ri(2, 10), (rnd() < 0.5 ? -1 : 1) * ri(3, 14), 0);
   }
 }
 </script>
