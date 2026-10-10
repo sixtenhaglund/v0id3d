@@ -73,7 +73,7 @@ const CFG = {
 //  reloads into the new version. build-site.js stamps a real number in here
 //  for the website; 'dev' (your own copy) never checks.
 // =====================================================================
-const BUILD_ID = '20260913154632';
+const BUILD_ID = '20261010191515';
 function checkForUpdate(then = null, resume = null) {
   if (BUILD_ID === 'dev' || location.protocol === 'file:') { if (then) then(); return; }
   if (S.checking) return;
@@ -108,10 +108,6 @@ const scratch = document.createElement('canvas');
 const sg = scratch.getContext('2d');
 const redCopy = document.createElement('canvas');
 const rg = redCopy.getContext('2d');
-const bloomC = document.createElement('canvas');           // tiny canvases for the glow
-const bl = bloomC.getContext('2d');
-const bloomC2 = document.createElement('canvas');
-const bl2 = bloomC2.getContext('2d');
 const psnap = document.createElement('canvas');            // snapshot of the world around the portal
 const psg = psnap.getContext('2d');
 
@@ -129,8 +125,6 @@ function resize() {
   for (const c of [cv, scratch, psnap]) { c.width = W; c.height = H; }
   redCopy.width = Math.ceil(W / 2); redCopy.height = Math.ceil(H / 2);   // the red ghost is made at half size (4x cheaper)
   rg.imageSmoothingEnabled = false;
-  bloomC.width = Math.ceil(W / 4); bloomC.height = Math.ceil(H / 4);
-  bloomC2.width = Math.ceil(W / 8); bloomC2.height = Math.ceil(H / 8);
   const cw = W * PX / dpr, ch = H * PX / dpr;       // its size on the page (in browser pixels)
   cv.style.width = cw + 'px'; cv.style.height = ch + 'px';
   cv.style.left = Math.max(0, (innerWidth - cw) / 2) + 'px';   // centred (black bars around it if the window is bigger)
@@ -2531,9 +2525,10 @@ function drawBackground(camX, camY, k, late) {
       }
   }
 
-  // white dots in two layers; the far layer moves slower (parallax = fake depth)
+  // white dots in THREE layers; the further a layer is, the slower it moves
+  // and the dimmer its dots (parallax + atmospheric perspective = fake depth)
   const fq = Math.floor(S.t * 6);
-  for (const L of [{ p: 0.3, cell: 30, seed: 1, big: 0 }, { p: 0.65, cell: 46, seed: 2, big: 0.25 }]) {
+  for (const L of [{ p: 0.12, cell: 20, seed: 3, big: 0, far: true }, { p: 0.3, cell: 30, seed: 1, big: 0 }, { p: 0.65, cell: 46, seed: 2, big: 0.25 }]) {
     const ox = camX * L.p, oy = camY * L.p;
     const i0 = Math.floor(ox / L.cell), i1 = Math.floor((ox + W) / L.cell);
     const j0 = Math.floor(oy / L.cell), j1 = Math.floor((oy + H) / L.cell);
@@ -2546,7 +2541,7 @@ function drawBackground(camX, camY, k, late) {
       if (tw < 0.04 + k * 0.08) continue;                     // flicker off
       if (late > 0 && tw > 1 - late * 0.3) sx += ri(-4, 4);   // jitter when breaking
       const redden = hash2(i, j, 5) < late;
-      g.fillStyle = redden ? '#ff0000' : (h < 0.12 ? '#fff' : '#8c8c96');
+      g.fillStyle = redden ? (L.far ? '#8a0000' : '#ff0000') : L.far ? (h < 0.08 ? '#6e6e76' : '#3c3c42') : (h < 0.12 ? '#fff' : '#8c8c96');
       const s = h < L.big * 0.2 ? 2 : 1;
       g.fillRect(sx, sy, s, s);
     }
@@ -3608,7 +3603,7 @@ function drawStarDimension() {
   }
   g.globalAlpha = 1; g.globalCompositeOperation = 'source-over';
   drawDimPath(cx, cy);                     // the bright dots, the Rift, its explosion (before the bloom, so they GLOW)
-  bloom(STAR_BLOOM);
+  bloom(STAR_BLOOM, true);                         // (the classic glow — see bloom())
   drawDimCrack(cx, cy);                    // the pitch-black crack (AFTER the bloom, or the glow would smear it grey)
   drawDimYou(cx, cy);                      // you — always on top of everything
   drawDimFlash();                          // white flashes (a dot touched, the explosion)
@@ -4397,20 +4392,46 @@ function drawPlayer(camX, camY, k) {
 // free. Shrink twice (1/4, then 1/8), then mix both glows together on a
 // TINY canvas and stretch that over the screen ONCE — painting the whole
 // screen is the expensive part, so doing it once instead of twice is faster.)
-const bloomMix = document.createElement('canvas'), bmx = bloomMix.getContext('2d');
-function bloom(strength) {
-  bl.globalCompositeOperation = 'copy'; bl.imageSmoothingEnabled = true; bl.imageSmoothingQuality = 'high';
-  bl.drawImage(cv, 0, 0, bloomC.width, bloomC.height);
-  bl2.globalCompositeOperation = 'copy'; bl2.imageSmoothingEnabled = true;
-  bl2.drawImage(bloomC, 0, 0, bloomC2.width, bloomC2.height);
-  if (bloomMix.width !== bloomC.width || bloomMix.height !== bloomC.height) { bloomMix.width = bloomC.width; bloomMix.height = bloomC.height; }
-  bmx.globalCompositeOperation = 'copy'; bmx.globalAlpha = 0.55 / 0.6; bmx.drawImage(bloomC, 0, 0);        // tight glow...
-  bmx.globalCompositeOperation = 'lighter'; bmx.globalAlpha = 1; bmx.imageSmoothingEnabled = true;
-  bmx.drawImage(bloomC2, 0, 0, bloomMix.width, bloomMix.height);                                             // ...+ wide glow
+//
+// THE BETTER BLOOM (like the soft glow around lamps in big 3D games):
+//  1) shrink to 1/2 and MULTIPLY that copy by itself (half strength). Bright
+//     stays bright (1 x 1 = 1) but dim stuff gets dimmer (0.5 x 0.5 = 0.25) —
+//     so bright things glow most, and dim grey bits don't smear a haze.
+//  2) keep shrinking: 1/4, 1/8, 1/16, 1/32. Each one is blurrier.
+//  3) climb back up: stretch the smallest one up 2x onto the next, and so
+//     on. Growing only 2x at a time keeps the huge glow smooth and round
+//     (stretching 1/32 straight to full size would look blocky).
+//  The result: a tight bright halo + a very wide soft glow, all in one.
+const BLOOM_LV = [2, 4, 8, 16, 32].map(d => ({ d, c: document.createElement('canvas') }));
+BLOOM_LV.forEach(L => { L.x = L.c.getContext('2d'); });
+const BLOOM_BRIGHT = 0.5;                             // how strongly dim things are left out of the glow (0 = not at all, 1 = fully)
+const BLOOM_GAIN = 0.95;                               // overall strength of the glow (measured: about as bright as the old glow, just softer and wider)
+const BLOOM_UP = [1.0, 1.15, 1.3, 1.4];               // how much of each wider glow is added back (1/4 ... 1/32)
+// classic = true: the OLD simple glow (1/4 + 1/8 only). The star dimension
+// uses it — the bright-only step turns its blue too deep, and the very wide
+// glow adds up into a purple fog over thousands of stars.
+function bloom(strength, classic = false) {
+  for (const L of BLOOM_LV) {
+    const w = Math.ceil(W / L.d), h = Math.ceil(H / L.d);
+    if (L.c.width !== w || L.c.height !== h) { L.c.width = w; L.c.height = h; }
+    L.x.imageSmoothingEnabled = true; L.x.imageSmoothingQuality = 'high';
+  }
+  const [b2, b4, b8, b16, b32] = BLOOM_LV;
+  b2.x.globalCompositeOperation = 'copy'; b2.x.globalAlpha = 1; b2.x.drawImage(cv, 0, 0, b2.c.width, b2.c.height);
+  if (!classic) { b2.x.globalCompositeOperation = 'multiply'; b2.x.globalAlpha = BLOOM_BRIGHT; b2.x.drawImage(b2.c, 0, 0); }   // bright stays, dim fades
+  for (let i = 1; i < BLOOM_LV.length; i++) {                                      // shrink, shrink, shrink...
+    const A = BLOOM_LV[i - 1], B = BLOOM_LV[i];
+    B.x.globalCompositeOperation = 'copy'; B.x.globalAlpha = 1; B.x.drawImage(A.c, 0, 0, B.c.width, B.c.height);
+  }
+  for (let i = classic ? 2 : BLOOM_LV.length - 1; i >= 2; i--) {                  // ...then climb back up to 1/4
+    const A = BLOOM_LV[i], B = BLOOM_LV[i - 1];
+    B.x.globalCompositeOperation = 'lighter'; B.x.globalAlpha = classic ? 1 : BLOOM_UP[i - 1];
+    B.x.drawImage(A.c, 0, 0, B.c.width, B.c.height);
+  }
   g.save();
   g.imageSmoothingEnabled = true;                     // smooth when stretching back up = soft glow
   g.globalCompositeOperation = 'lighter';
-  g.globalAlpha = Math.min(1, strength * 0.6); g.drawImage(bloomMix, 0, 0, W, H);
+  g.globalAlpha = Math.min(1, strength * 0.6 * (classic ? 0.92 : BLOOM_GAIN)); g.drawImage(b4.c, 0, 0, W, H);
   g.restore();
 }
 
@@ -4448,9 +4469,11 @@ function postFX(k, late) {
   if (off > 0) {
     rg.globalCompositeOperation = 'copy'; rg.drawImage(cv, 0, 0, redCopy.width, redCopy.height);
     rg.globalCompositeOperation = 'multiply'; rg.fillStyle = '#f00'; rg.fillRect(0, 0, W, H);
+    const dir = rnd() < 0.5 ? -1 : 1;
     g.globalCompositeOperation = 'lighter'; g.globalAlpha = 0.5;
-    g.drawImage(redCopy, off * (rnd() < 0.5 ? -1 : 1), 0, W, H);
+    g.drawImage(redCopy, off * dir, 0, W, H);
     g.globalAlpha = 1; g.globalCompositeOperation = 'source-over';
+    colorFringe(-off * dir);                     // + a cyan copy the OTHER way = the picture splits like a broken lens
   }
   // 3) right before the end: solid bars of pure red (sometimes white) slice across
   if (late > 0.8 && rnd() < (late - 0.8) * 0.8) {
@@ -4729,6 +4752,247 @@ function edgeCorruption(L, px = W / 2, py = H / 2) {
     const a = rnd() * 6.283 - 3.1416, m = tunnelM(a), f = 1.02 - Math.pow(rnd(), 2) * 0.5;
     glitchPiece(Math.round(cx + Math.cos(a) * ax * m * f), Math.round(cy + Math.sin(a) * by * m * f), rnd() < L ? 2 : 1);
   }
+}
+</script>
+<script>
+// V0ID3D — lighting.js: the "nice graphics" layer: lights that light up the void, glowing dust, vignette + film grain
+"use strict";
+
+// =====================================================================
+//  DYNAMIC LIGHTING — every glowing thing (The Anchor, shards, Rifts,
+//  Nodes, Locators, you, The Portal) gives off LIGHT. The void isn't
+//  empty: it's full of dust and fog you normally can't see because it's
+//  pitch black. Where light reaches, the dust shows up, lit in the light's
+//  colour. Far from any light it stays pure black — same look as before.
+//
+//  How it works, every frame:
+//   1) LIGHT MAP: for every pixel, add up how much light reaches it from
+//      each light (bright in the middle, fading out to 0 at its radius).
+//   2) DUST: a ready-made "texture" of fog wisps + specks, stuck to the
+//      world (so it slides by as you move, like a real floor).
+//   3) light x dust = what you see. No light = no dust = black.
+//  It's done at HALF size (each lit cell = 2x2 game pixels, chunky like the
+//  rest of the game) and in plain JavaScript numbers, then put on the
+//  screen in one go.
+// =====================================================================
+const LIGHT_TEX = 256;                                   // the dust texture is 256 x 256 cells and repeats
+// smooth random ("value noise") that wraps around at the texture's edge, so the repeat has no seam
+function tileNoise(x, y, cell, seed) {
+  const n = LIGHT_TEX / cell, gx = x / cell, gy = y / cell;
+  const x0 = Math.floor(gx), y0 = Math.floor(gy), fx = smoothstep(gx - x0), fy = smoothstep(gy - y0);
+  const h = (i, j) => hash2(((i % n) + n) % n, ((j % n) + n) % n, seed);
+  return lerp(lerp(h(x0, y0), h(x0 + 1, y0), fx), lerp(h(x0, y0 + 1), h(x0 + 1, y0 + 1), fx), fy);
+}
+function makeDust(seed, octaves, grain) {
+  const t = new Float32Array(LIGHT_TEX * LIGHT_TEX);
+  for (let y = 0; y < LIGHT_TEX; y++) for (let x = 0; x < LIGHT_TEX; x++) {
+    // 1) WARP: look up the noise a bit off to the side, by an amount that is
+    //    itself smooth noise. That bends straight shapes into swirly smoke.
+    const wx = x + (tileNoise(x, y, octaves[0], seed + 3) - 0.5) * 60, wy = y + (tileNoise(x, y, octaves[0], seed + 5) - 0.5) * 60;
+    const ux = ((wx % LIGHT_TEX) + LIGHT_TEX) % LIGHT_TEX, uy = ((wy % LIGHT_TEX) + LIGHT_TEX) % LIGHT_TEX;
+    // 2) "ridged fbm": big + smaller + even smaller noise, each one folded
+    //    (1 - |2n - 1|) so it makes thin bright VEINS instead of round blobs
+    let v = 0, amp = 0.55, tot = 0;
+    for (const cell of octaves) { const n = tileNoise(ux, uy, cell, seed + cell); v += (1 - Math.abs(n * 2 - 1)) * amp; tot += amp; amp *= 0.5; }
+    v /= tot;
+    // 3) keep only the strongest veins, so there are dark gaps between them
+    //    (a smooth haze everywhere would look washed out)
+    v = Math.pow(clamp((v - 0.6) / 0.32, 0, 1), 1.8);
+    const h = hash2(x, y, seed + 7);                     // + scattered specks of dust that catch the light
+    if (h < grain) v = Math.max(v, 0.55 + h / grain * 0.45);
+    t[y * LIGHT_TEX + x] = v;
+  }
+  return t;
+}
+const DUST_NEAR = makeDust(31, [64, 32, 16], 0.03);     // the dust right here (moves with the world)
+const DUST_FAR = makeDust(57, [128, 64, 32], 0.0);       // a deeper fog layer (moves slower = further away)
+
+const lightC = document.createElement('canvas'), lcx = lightC.getContext('2d');
+let LW = 0, LH = 0, lightR = null, lightG = null, lightB = null, lightImg = null;
+const lights = [];
+// add a light. (x, y) on screen, r = how far it reaches, k = how strong, colour 0..1
+function addLight(x, y, r, k, cr, cg, cb) {
+  if (k <= 0.003 || r < 2 || x < -r || y < -r || x > W + r || y > H + r) return;
+  lights.push({ x, y, r, k, cr, cg, cb });
+}
+
+// collect every light that's on screen right now
+function gatherLights(camX, camY) {
+  lights.length = 0;
+  const gone = S.stab || 0, beat = beatK();
+  // THE ANCHOR — the brightest thing in the void, thumping on its heartbeat
+  const stab = world.delivered / Math.max(1, world.total);
+  addLight(-camX, -camY, 240 + stab * 70 + beat * 25, 0.8 + world.anchorPulse * 0.6 + beat * 0.2, 1, 0.1, 0.07);
+  // shards lying around
+  for (const s of world.shards) if (s.state === 'free') addLight(s.x - camX, s.y - camY, 46, 0.55, 1, 0.05, 0.05);
+  // Rifts glow an angry red (and fade out when the area is stabilized)
+  for (const b of world.blobs) {
+    const lp = portalCalm(b.x, b.y), near = b === S.riftB ? S.rift : 0;
+    const k = (0.75 + near * 0.6) * (1 - gone) * (0.85 + 0.15 * Math.sin(S.t * 2.1 + (b.seed % 100)));
+    addLight(b.x - camX, b.y - camY, b.r * 3.6, k * (1 - lp), 1, 0, 0);
+    if (lp > 0) addLight(b.x - camX, b.y - camY, b.r * 3.6, k * lp * 0.8, 0.35, 0.4, 1);   // purified = blue
+  }
+  // living Nodes
+  if (gone < 1) for (const nd of world.nodes) if (!nd.dead) addLight(nd.x - camX, nd.y - camY, 52, 0.5 * (1 - gone), 1, 0.04, 0.04);
+  // Locators (a lot brighter while charging, and a big flash when they blow)
+  for (const l of world.locators || []) {
+    if (l.state === 'gone') continue;
+    const ch = l.state === 'charging' ? l.t / LOC.charge : 0, boom = l.state === 'boom' ? 1 - l.t / LOC.boom : 0;
+    addLight(l.x - camX, l.y - camY, 70 + ch * 60 + boom * 140, 0.7 + ch * 0.6 + boom * 1.6, 1, 0.12 + boom * 0.5, 0.1 + boom * 0.5);
+  }
+  // The Portal: the only blue light in the void
+  const P = world.portal;
+  if (P) addLight(P.x - camX, P.y - camY, 260, 1.0, 0.33, 0.42, 1);
+  // YOU: a small red light (you already glow red)
+  if (player && (S.mode === 'play' || S.mode === 'paused' || S.mode === 'clear' || S.mode === 'warping'))
+    addLight(player.x - camX, player.y - camY, 50, 0.4, 1, 0.05, 0.05);
+}
+
+// The lit dust is rounded to a few brightness STEPS (like pixel art, which
+// uses a few solid shades instead of smooth see-through gradients).
+// STEP[v] turns 0..1023 into a stepped 0..255, made once.
+const LIGHT_STEPS = 7, DUST_GAIN = 0.5;                   // (the dust is never brighter than 50%: a hint of a world, not a new floor)
+const STEP = new Uint8Array(1024).map((_, i) => Math.round(Math.floor(i / 1023 * LIGHT_STEPS + 0.15) / LIGHT_STEPS * 255));
+
+function drawLighting(camX, camY) {
+  if (!world) return;
+  const w2 = Math.ceil(W / 2), h2 = Math.ceil(H / 2);
+  if (w2 !== LW || h2 !== LH) {
+    LW = w2; LH = h2; lightC.width = LW; lightC.height = LH;
+    lightR = new Float32Array(LW * LH); lightG = new Float32Array(LW * LH); lightB = new Float32Array(LW * LH);
+    lightImg = lcx.createImageData(LW, LH);
+  }
+  gatherLights(camX, camY);
+  lightR.fill(0); lightG.fill(0); lightB.fill(0);
+  // 1) the light map: each light only touches the square it can reach
+  for (const L of lights) {
+    const cx = L.x / 2, cy = L.y / 2, r = L.r / 2, r2 = r * r;
+    const x0 = Math.max(0, Math.floor(cx - r)), x1 = Math.min(LW - 1, Math.ceil(cx + r));
+    const y0 = Math.max(0, Math.floor(cy - r)), y1 = Math.min(LH - 1, Math.ceil(cy + r));
+    for (let y = y0; y <= y1; y++) {
+      const dy = y + 0.5 - cy, dy2 = dy * dy, row = y * LW;
+      for (let x = x0; x <= x1; x++) {
+        const dx = x + 0.5 - cx, d2 = dx * dx + dy2;
+        if (d2 >= r2) continue;
+        // (1 - d²/r²)³: bright and wide in the middle, with a long soft tail
+        let f = 1 - d2 / r2; f = f * f * f * L.k;
+        const i = row + x;
+        lightR[i] += f * L.cr; lightG[i] += f * L.cg; lightB[i] += f * L.cb;
+      }
+    }
+  }
+  // 2+3) light x dust, rounded to a few steps
+  const data = lightImg.data, T = LIGHT_TEX - 1, G = DUST_GAIN * 1023;
+  const ox = Math.floor(camX / 2), oy = Math.floor(camY / 2);
+  // the far fog moves at 60% (parallax = it looks deeper) and drifts slowly by itself
+  const fx = Math.floor(camX * 0.3 + S.t * 3), fy = Math.floor(camY * 0.3 + S.t * 1.2);
+  for (let y = 0; y < LH; y++) {
+    const ty = ((y + oy) & T) * LIGHT_TEX, fty = ((y + fy) & T) * LIGHT_TEX;
+    for (let x = 0; x < LW; x++) {
+      const i = y * LW + x, lr = lightR[i], lg = lightG[i], lb = lightB[i], p = i * 4;
+      data[p + 3] = 255;
+      if (lr + lg + lb < 0.004) { data[p] = data[p + 1] = data[p + 2] = 0; continue; }
+      const d = (DUST_NEAR[ty + ((x + ox) & T)] * 0.62 + DUST_FAR[fty + ((x + fx) & T)] * 0.38) * G;
+      const vr = lr * d, vg = lg * d, vb = lb * d;
+      data[p] = STEP[vr > 1023 ? 1023 : vr | 0]; data[p + 1] = STEP[vg > 1023 ? 1023 : vg | 0]; data[p + 2] = STEP[vb > 1023 ? 1023 : vb | 0];
+    }
+  }
+  lcx.putImageData(lightImg, 0, 0);
+  // one full-screen draw, ADDED on top of the black background
+  g.save(); g.imageSmoothingEnabled = false; g.globalCompositeOperation = 'lighter';
+  g.drawImage(lightC, 0, 0, LW * 2, LH * 2);
+  g.restore();
+}
+// how much light reaches a spot on screen (0 = dark ... 1+ = bright), for things that CATCH the light
+function lightAt(x, y) {
+  const i = ((y / 2) | 0) * LW + ((x / 2) | 0);
+  if (!lightR || x < 0 || y < 0 || x >= LW * 2 || y >= LH * 2) return 0;
+  return lightR[i] + lightG[i] + lightB[i];
+}
+function lightColAt(x, y) {
+  const i = ((y / 2) | 0) * LW + ((x / 2) | 0);
+  if (!lightR || x < 0 || y < 0 || x >= LW * 2 || y >= LH * 2) return [0, 0, 0];
+  return [lightR[i], lightG[i], lightB[i]];
+}
+
+// =====================================================================
+//  EMBERS — little sparks of glitch drifting between you and the world.
+//  On their own they're nearly invisible; when they float through light
+//  they light up in its colour (like dust in a sunbeam).
+// =====================================================================
+function drawEmbers(camX, camY) {
+  for (const L of [{ p: 1.15, cell: 38, seed: 211, n: 0.3 }, { p: 0.82, cell: 30, seed: 223, n: 0.3 }]) {
+    const ox = camX * L.p, oy = camY * L.p;
+    for (let i = Math.floor(ox / L.cell) - 1; i <= Math.floor((ox + W) / L.cell) + 1; i++)
+      for (let j = Math.floor(oy / L.cell) - 1; j <= Math.floor((oy + H) / L.cell) + 1; j++) {
+        const h = hash2(i, j, L.seed); if (h > L.n) continue;
+        const sp = 4 + h * 30;                                       // each one rises at its own speed...
+        const x = i * L.cell + hash2(i, j, L.seed + 1) * L.cell - ox + Math.sin(S.t * 0.8 + h * 40) * 6;
+        const y = j * L.cell + (((hash2(i, j, L.seed + 2) * L.cell - S.t * sp) % L.cell) + L.cell) % L.cell - oy;
+        const sx = Math.round(x), sy = Math.round(y);
+        if (sx < 0 || sy < 0 || sx >= W || sy >= H) continue;
+        const [r, gg, b] = lightColAt(sx, sy), lit = Math.min(1, (r + gg + b) * 0.9);
+        if (lit < 0.06) continue;                                     // ...and only shows in the light
+        const tw = 0.6 + 0.4 * Math.sin(S.t * (3 + h * 9) + h * 50);  // twinkle
+        const m = Math.max(r, gg, b) || 1, a = lit * tw;
+        // its colour = the light's colour, but it gets white-hot right next to a strong light
+        const hot = clamp((r + gg + b - 1.2) * 0.6, 0, 1);
+        g.fillStyle = `rgb(${Math.round(lerp(r / m, 1, hot) * 255 * a)},${Math.round(lerp(gg / m, 1, hot) * 255 * a)},${Math.round(lerp(b / m, 1, hot) * 255 * a)})`;
+        g.fillRect(sx, sy, 1, 1);
+        if (L.p > 1 && h < 0.08 && a > 0.4) g.fillRect(sx, sy - 1, 1, 1);     // a few near ones are 2 pixels tall
+      }
+  }
+}
+
+// =====================================================================
+//  CINEMATIC FINISH — applied to the finished picture (before the HUD)
+//   - VIGNETTE: the corners get a little darker, like a camera lens
+//   - FILM GRAIN: tiny noise, but ONLY on bright things. It's mixed with
+//     'overlay', and overlay leaves pure black alone — so the void stays
+//     pure black and never turns grey.
+// =====================================================================
+let vignetteC = null;
+function makeVignette() {
+  const c = makeCanvas(W, H), x = c.getContext('2d');
+  const gr = x.createRadialGradient(W / 2, H / 2, H * 0.42, W / 2, H / 2, Math.hypot(W, H) * 0.56);
+  gr.addColorStop(0, 'rgba(0,0,0,0)'); gr.addColorStop(0.6, 'rgba(0,0,0,0.18)'); gr.addColorStop(1, 'rgba(0,0,0,0.5)');
+  x.fillStyle = gr; x.fillRect(0, 0, W, H);
+  return c;
+}
+const GRAIN = [0, 1, 2].map(s => {
+  const c = makeCanvas(128, 128), x = c.getContext('2d'), im = x.createImageData(128, 128);
+  for (let i = 0; i < 128 * 128; i++) {
+    const v = 128 + (hash2(i, s, 401) + hash2(i, s, 402) - 1) * 150;   // grey around the middle (128 = no change)
+    im.data[i * 4] = im.data[i * 4 + 1] = im.data[i * 4 + 2] = clamp(v, 0, 255); im.data[i * 4 + 3] = 255;
+  }
+  x.putImageData(im, 0, 0);
+  return g.createPattern(c, 'repeat');
+});
+function cinematic() {
+  if (!vignetteC || vignetteC.width !== W || vignetteC.height !== H) vignetteC = makeVignette();
+  g.drawImage(vignetteC, 0, 0);
+  const p = GRAIN[Math.floor(S.t * 24) % 3];
+  p.setTransform(new DOMMatrix().translate(ri(0, 127), ri(0, 127)));
+  g.save(); g.globalCompositeOperation = 'overlay'; g.globalAlpha = 0.16;
+  g.fillStyle = p; g.fillRect(0, 0, W, H);
+  g.restore();
+}
+
+// =====================================================================
+//  COLOUR FRINGE (chromatic aberration) — when the screen glitches hard,
+//  the picture splits a little: a red copy one way and a cyan copy the
+//  other, like a cheap camera lens or a broken monitor. White things get
+//  red + blue edges; pure red things only get the red side, so the void
+//  stays red/white/black.
+// =====================================================================
+function colorFringe(off) {
+  if (Math.abs(off) < 1) return;
+  // red part, shifted left — and the green+blue part (cyan), shifted right
+  rg.globalCompositeOperation = 'copy'; rg.drawImage(cv, 0, 0, redCopy.width, redCopy.height);
+  rg.globalCompositeOperation = 'multiply'; rg.fillStyle = '#0ff'; rg.fillRect(0, 0, W, H);
+  g.save(); g.imageSmoothingEnabled = false; g.globalCompositeOperation = 'lighter'; g.globalAlpha = 0.35;
+  g.drawImage(redCopy, off, 0, W, H);
+  g.restore();
 }
 </script>
 <script>
@@ -5190,6 +5454,7 @@ function render() {
   const camX = Math.round(cam.x - W / 2 + rr(-sh, sh)), camY = Math.round(cam.y - H / 2 + rr(-sh, sh));
 
   drawBackground(camX, camY, k, late);
+  drawLighting(camX, camY);                        // the lights reveal the dust and fog in the void
   drawAnchor(camX, camY, k);
   drawBlobs(camX, camY, k, late);
   drawNodes(camX, camY);
@@ -5222,6 +5487,7 @@ function render() {
   }
   g.globalAlpha = 1;
   drawMotes(camX, camY);
+  drawEmbers(camX, camY);                          // sparks that only show up in the light
   bloom(0.75);                                     // everything bright starts to glow
   // the solid glitch goes on AFTER the glow — otherwise the glow smears red
   // haze over its black pieces and the whole thing turns muddy
@@ -5232,6 +5498,7 @@ function render() {
       Math.hypot(player.x - world.portal.x, player.y - world.portal.y) < 80) drawPlayer(camX, camY, k);
 
   postFX(k, late);
+  cinematic();                                     // vignette + film grain (on the world, not the HUD)
   riftFX(S.rift * (1 - S.pure), S.riftX - camX, S.riftY - camY);
   edgeCorruption(S.mode === 'dying' ? 0.6 + S.dieT * 0.3 : S.mode === 'grabbed' ? 1 : late,
                  player ? player.x - camX : W / 2, player ? player.y - camY : H / 2);
