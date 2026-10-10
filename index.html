@@ -67,7 +67,10 @@ const CFG = {
 //  reloads into the new version. build-site.js stamps a real number in here
 //  for the website; 'dev' (your own copy) never checks.
 // =====================================================================
-const BUILD_ID = '20261010195920';
+const BUILD_ID = '20261010201606';
+// THE PUBLIC LOCK: true = the website/app won't start, it just says
+// "NO IVAR. NO." (your own 'dev' copy always plays). false = everyone can play.
+const PUBLIC_LOCKED = false;
 function checkForUpdate(then = null, resume = null) {
   if (BUILD_ID === 'dev' || location.protocol === 'file:') { if (then) then(); return; }
   if (S.checking) return;
@@ -1479,9 +1482,9 @@ try {
 } catch (e) {}
 // start from the title: continue the area you restarted (after an update), or a new run
 function startFromTitle() {
-  // THE PUBLIC WEBSITE IS LOCKED: there the game won't start, it just says no.
-  // (BUILD_ID is 'dev' in your own copy, so yours still works normally)
-  if (BUILD_ID !== 'dev') { S.noIvar = 2.5; SFX.denied(); S.shake = 4; return; }
+  // THE PUBLIC LOCK (PUBLIC_LOCKED in settings.js): the website/app won't start, it just says no.
+  // (BUILD_ID is 'dev' in your own copy, so yours always works normally)
+  if (PUBLIC_LOCKED && BUILD_ID !== 'dev') { S.noIvar = 2.5; SFX.denied(); S.shake = 4; return; }
   if (S.resume) { const r = S.resume; S.resume = null; S.updated = false; startArea(r.area, r.n); }
   else { S.updated = false; newRun(); }
 }
