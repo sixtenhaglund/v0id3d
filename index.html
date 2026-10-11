@@ -134,7 +134,7 @@ const CFG = {
 //  reloads into the new version. build-site.js stamps a real number in here
 //  for the website; 'dev' (your own copy) never checks.
 // =====================================================================
-const BUILD_ID = '20261011143450';
+const BUILD_ID = '20261011155308';
 // THE PUBLIC LOCK: true = the website/app won't start, it just says
 // "NO IVAR. NO." (your own 'dev' copy always plays). false = everyone can play.
 const PUBLIC_LOCKED = false;
@@ -1690,7 +1690,7 @@ function newTrackBus(cut, song) {
 // (and the portal song, when you're near a portal)
 function musicTick() {
   const ctx = AU.ctx; if (!ctx) return;
-  portalMusicTick();
+  portalMusicTick(); galaxyAudioTick();
   // which song: in the soundtrack player, the one you picked; on the menus, the menu theme
   const want = S.mode === 'soundtrack' ? JUKE.playing
     : S.mode === 'title' ? 'menu'
@@ -2345,7 +2345,9 @@ function portalCracks(R, rx, ry) {
 function addPodiums(w, R) {
   for (const s of w.shards) {
     let x = 0, y = 0;
-    for (let tries = 0; tries < 2000; tries++) {
+    const gs = w.suns ? galaxyPodiumSpot(w, R) : null;      // (in the galaxy: never in a sun, planet or black hole — often ON a planet)
+    if (gs) [x, y] = gs;
+    else for (let tries = 0; tries < 2000; tries++) {
       const a = R() * 6.283, d = 480 + Math.sqrt(R()) * (edgeRadiusAt(w.edge, a) - 720);
       x = Math.cos(a) * d; y = Math.sin(a) * d;
       if (!w.podiums.some(p => Math.hypot(p.x - x, p.y - y) < 340)) break;
@@ -2367,7 +2369,7 @@ function addPodiums(w, R) {
   };
   const okPart = (x, y, r) => Math.hypot(x, y) - r * 1.35 > CFG.beamerSafe + 20 &&                 // (keeps away from The Anchor)
     Math.hypot(x, y) + r * 1.35 < edgeRadiusAt(w.edge, Math.atan2(y, x)) - 60 &&
-    !w.podiums.some(p => Math.hypot(p.x - x, p.y - y) < r * 1.35 + 70);
+    !w.podiums.some(p => Math.hypot(p.x - x, p.y - y) < r * 1.35 + 70) && galaxyFree(w, x, y, r * 1.35 + 30);
   for (let k = 0, seas = 0; k < 3000 && seas < B.count; k++) {
     const a = R() * 6.283, r = B.r[0] + R() * (B.r[1] - B.r[0]), d = 420 + Math.sqrt(R()) * (edgeRadiusAt(w.edge, a) - 680), x = Math.cos(a) * d, y = Math.sin(a) * d;
     if (!okPart(x, y, r)) continue;
@@ -2483,11 +2485,13 @@ function genWorld(n, seed, portal = 0, opt = {}) {
     if (w.locators.some(l => Math.hypot(l.x - x, l.y - y) < 500)) continue;   // spread them out
     w.locators.push({ x, y, state: 'idle', t: 0, id: w.locators.length, target: null });
   }
+  if (opt.galaxy) genGalaxy(w, R, opt.galaxy);                // planets, suns, black holes (galaxy.js)
   if (opt.podiums) addPodiums(w, R);
   if (opt.dangerBlobs) addDangerBlobs(w, R, opt.dangerBlobs);   // (danger.js)
   if (opt.front) w.front = makeFront(w);
   if (opt.beamers) addBeamers(w, R, opt.beamers);
   if (opt.enemies) addEnemies(w, R, opt.enemies);
+  if (opt.galaxyLife) genGalaxyLife(w, R, opt.galaxyLife);    // its creatures (galaxy.js)
   return w;
 }
 </script>
@@ -2513,6 +2517,7 @@ function startArea(area, n) {
   }
   cam.x = player.x; cam.y = player.y;
   particles = []; flyers = []; pops = []; FX.list = []; SPIKES.list = []; SUCK.list = [];
+  if (world.suns) { for (const b of world.solids) bakeSolid(b); for (const b of world.suns) bakeSun(b); }   // (the galaxy: bake every planet + sun picture NOW, while loading)
   if (world.front) { pureTile(); pureHiTile(); rimTile(); }                 // (build the Purification's texture NOW, while loading — not mid-game when the wall first shows up)
   S.banner = 0;                                   // (the sector's name slides in at the top AFTER the arrival)
   S.hudSeen = {}; S.heldK = 0; S.heldShow = null;  // (the HUD slides in fresh)
@@ -2594,7 +2599,7 @@ function sealComplete() {
 // death menu can say what killed you. small = a Rift's little bite (it doesn't
 // use the "can't be hit again" cooldown, it has its own 2-second rhythm).
 // noCd = this hit ignores the short "can't be hit again" cooldown (every laser, spike... counts)
-const ENEMY_CAUSES = ['beamer', 'mine', 'basher', 'spike', 'maw', 'node', 'fenix', 'feather'];
+const ENEMY_CAUSES = ['beamer', 'mine', 'basher', 'spike', 'maw', 'node', 'fenix', 'feather', 'worm', 'voidling', 'acid', 'traveler'];
 function hurt(dmg, cause, small = false, noCd = false) {
   if (S.sector && ENEMY_CAUSES.includes(cause)) dmg *= diff().dmg;   // (enemies hit softer / harder on easier / harder difficulties)
   if (S.mode !== 'play' || (world && world.won)) return;   // (already won: nothing can hurt you any more)
@@ -2684,6 +2689,13 @@ const DEATH_TEXT = {
   basher: ['CRUSHED', 'KILLED BY A BASHER'],
   spike:  ['SHREDDED', 'KILLED BY BASHER SPIKES'],
   maw:    ['STRUCK DOWN', 'KILLED BY A THUNDERMAW'],
+  sun:      ['BURNED', 'KILLED BY A SUN'],
+  solid:    ['CRASHED', 'RAMMED INTO A PLANET'],
+  blackhole: ['SPAGHETTIFIED', 'SWALLOWED BY A BLACK HOLE'],
+  worm:     ['DEVOURED', 'KILLED BY A CRATERWORM'],
+  voidling: ['NIBBLED', 'KILLED BY VOIDLINGS'],
+  acid:     ['MELTED', 'KILLED BY A STONEWALKER'],
+  traveler: ['ANNIHILATED', 'KILLED BY A RIFTTRAVELER'],
 };
 
 // THE PORTAL ENDING (a secret). Stay 4 seconds in The Portal's middle and it
@@ -3163,6 +3175,7 @@ function updatePlay(dt, k) {
     while (S.riftTouch >= 1) { S.riftTouch -= 1; hurt(1, 'rift', true); if (S.mode !== 'play') return; }
   } else S.riftTouch = -1;
 
+  if (world.suns && galaxyPlayer(dt)) return;             // suns, planets, black holes (galaxy.js)
   // standing in the Purification eats you away: 1 HP a second
   if (inPure) { S.pureTouch = (S.pureTouch || 0) + CFG.pureDamage * dt; while (S.pureTouch >= 1) { S.pureTouch -= 1; hurt(1, 'purified', true); if (S.mode !== 'play') return; } }
   else S.pureTouch = Math.max(0, (S.pureTouch || 0) - dt);
@@ -3176,10 +3189,11 @@ function updatePlay(dt, k) {
   if (world.opt.podiums && pd > 1) {
     // THE WIND: the closer you get to the border, the harder it blows you back
     // (squared: barely anything far out, a storm right at the edge)
-    const ux = player.x / pd, uy = player.y / pd, wk = clamp(1 - (lim - pd) / CFG.borderWindRange, 0, 1);
+    const windy = world.opt.windEdge, ux = player.x / pd, uy = player.y / pd, wk = clamp(1 - (lim - pd) / (CFG.borderWindRange * (windy ? 1.6 : 1)), 0, 1);
     S.windK = wk;
+    if (windy) GSFX.windSet(wk);                             // (and you HEAR it howl)
     if (wk > 0) {
-      const push = CFG.borderWind * wk * wk;
+      const push = CFG.borderWind * wk * wk * (windy ? 2.2 : 1);
       player.x -= ux * push * dt; player.y -= uy * push * dt;
       if (rnd() < dt * 90 * wk) {                            // streaks of wind flying past you, back into the map
         const sa = Math.atan2(uy, ux) + rr(-0.9, 0.9), sd = lim + rr(-30, 10);
@@ -3187,7 +3201,7 @@ function updatePlay(dt, k) {
       }
     }
     // TOUCH IT: it throws you back in (and hurts)
-    if (pd > lim && S.launchT <= 0) {
+    if (pd > lim && S.launchT <= 0 && !windy) {
       player.x *= lim / pd; player.y *= lim / pd;
       player.dashT = 0; player.vx = -ux * CFG.borderLaunch; player.vy = -uy * CFG.borderLaunch; S.launchT = 0.35;
       explode(player.x + ux * 6, player.y + uy * 6, 'pure', 0.7); S.barrierHit = { x: player.x + ux * 8, y: player.y + uy * 8, t: S.t };
@@ -3216,6 +3230,7 @@ function updatePlay(dt, k) {
     if (S.mode === 'play') updateBashers(dt);
     if (S.mode === 'play') updateMaws(dt);
     if (S.mode === 'play') updateNodes(dt);
+    if (S.mode === 'play' && world.suns) updateGalaxyLife(dt);   // the galaxy's creatures (galaxy.js)
     if (S.mode === 'play' && world.boss) updateBoss(dt);   // FENIX (fenix.js)
     // the COUNTDOWN (LIGHTNING ROUND): at zero, you've failed
     if (S.lrTime != null && S.mode === 'play' && !world.won && !S.timeUp) { S.lrTime -= dt; if (S.lrTime <= 0) { S.lrTime = 0; S.timeUp = true; timeUpRush(); } }   // TIME'S UP: the Purification rushes in
@@ -3357,6 +3372,7 @@ function farRift(r, v) {                                   // baked once per siz
 function drawBackground(camX, camY, k, late) {
   g.fillStyle = '#000';
   g.fillRect(0, 0, W, H);
+  if (world.opt.galaxy) drawGalaxySky(camX, camY);           // (the galaxy: stars, nebulae, a far-away spiral galaxy)
   // when time runs low, bright red glitch bits appear all over the void.
   // MORE pieces at full strength — not a see-through red layer, which
   // would just mix with the black into a muddy, washed-out dark red.
@@ -5470,6 +5486,7 @@ function podiumCorrupted(p) {
   for (const b of world.bashers) if (!b.dead && near(b)) { b.dead = true; explode(b.x, b.y, 'red', 1, false); }
   for (const m of world.maws) if (m.state !== 'dying' && near(m)) { m.state = 'dying'; m.t = 0; }
   for (const n of world.nodes || []) if (!n.dead && near(n)) killNode(n);
+  galaxyKillNear(p.x, p.y, CFG.podiumBlast);
   for (const m of world.mines) if (!m.gone && near(m)) { m.gone = true; explode(m.x, m.y, 'red', 0.7, false); }
   world.podRing = { x: p.x, y: p.y, t: S.t };
   const left = world.podiums.length - world.delivered;
@@ -5478,6 +5495,7 @@ function podiumCorrupted(p) {
 
 function updatePurify(dt) {
   updateFront(dt);
+  pureCrackleSound(dt);
   if (S.mode !== 'play') return;
   // picking up a shard lying on the ground: only with empty hands
   if (carried().length < holdCap()) {
@@ -5644,6 +5662,7 @@ function updateFinale(dt, before) {
       e.dead = e.gone = true;
       if (Math.abs(e.x - cam.x) < W && Math.abs(e.y - cam.y) < H) explode(e.x, e.y, 'red', 0.7, false);
     }
+    galaxyKillNear(0, 0, r);
     world.beamers = world.beamers.filter(e => !e.dead); world.bashers = world.bashers.filter(e => !e.dead); world.maws = world.maws.filter(e => !e.dead); world.mines = world.mines.filter(e => !e.gone);
   }
   if (T > FIN.end) afterClear();
@@ -6046,6 +6065,7 @@ function drawNullification(camX, camY) {
   cpBox(g, nullC, B);
   // 5) the growing edge: lightning + specks
   if (front) drawFrontRim(camX, camY);
+  if (cyanWorld()) drawPureCrackle(vis, camX, camY);       // (LIGHTNING ROUND: it crackles with lightning)
   // the blobs: specks drifting off them... and burning away (red) when a podium is corrupted nearby
   const fq = Math.floor(S.t * 10);
   for (const n of vis) {
@@ -6339,7 +6359,7 @@ function drawPurifyHUD(k, late) {
   }
   edgeArrow(0, 0, (x, y) => { glowAt(x, y, 10, 10, 0.5); diamond(x, y, 4 + Math.sin(S.t * 5) * 0.8, '#ff0000'); diamond(x, y, 1.5, '#fff'); });
   const hunting = [...world.beamers.filter(b => !b.dead && (b.state === 'chase' || b.state === 'charge' || b.state === 'fire')),
-    ...world.bashers.filter(b => b.state === 'windup' || b.state === 'bash'), ...world.maws.filter(m => m.state === 'track' || m.state === 'open' || m.state === 'zap')];
+    ...world.bashers.filter(b => b.state === 'windup' || b.state === 'bash'), ...world.maws.filter(m => m.state === 'track' || m.state === 'open' || m.state === 'zap'), ...(world.travelers || []).filter(t => t.state !== 'hidden')];
   for (const b of hunting)
     edgeArrow(b.x, b.y, (x, y, a) => {
       const c = Math.cos(a), sn = Math.sin(a); g.fillStyle = (b.state === 'charge' || b.state === 'windup' || b.state === 'open') && Math.floor(S.t * 12) % 2 ? '#fff' : '#8a6cff';   // (purified enemies: blue-purple)
@@ -6517,6 +6537,43 @@ function armPath(ctx, arm, camX, camY) {
   }
   ctx.beginPath(); [...L, ...Rr.reverse()].forEach(([x, y], i) => i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)); ctx.closePath();
   return [L, Rr];
+}
+// LIGHTNING ROUND's Purification is ELECTRIC: bolts jump across every blob and
+// along its rim, bolts lash out of the wall into the map, and sparks of energy
+// flicker over it (a new pattern every 1/12 s)
+function drawPureCrackle(vis, camX, camY) {
+  const win = Math.floor(S.t * 12), bolts = [];
+  const rim = (n, i) => { const N = n.shape.length, a = ((i % N) + N) % N / N * 6.2832, r = nullRadius(n, ((i % N) + N) % N) * nullSize(n); return [n.x + Math.cos(a) * r - camX, n.y + Math.sin(a) * r - camY]; };
+  for (const n of vis) {
+    if (nullSize(n) < 0.2) continue;
+    const N = n.shape.length, cx = n.x - camX, cy = n.y - camY;
+    for (let k = 0; k < 4; k++) {
+      if (hash2(n.id * 7 + k, win, 3001) < 0.35) continue;
+      const i = Math.floor(hash2(n.id * 7 + k, win, 3002) * N);
+      if (k < 2) { const j = i + Math.floor(N * (0.3 + hash2(n.id, k + win, 3003) * 0.4)), [x0, y0] = rim(n, i), [x1, y1] = rim(n, j); bolts.push([boltPts(x0, y0, x1, y1, n.id * 31 + k + win, 8, 7), 3100 + n.id * 8 + k, true]); }   // ACROSS the blob
+      else { const [x0, y0] = rim(n, i), [x1, y1] = rim(n, i + 3 + Math.floor(hash2(k, win, 3004) * 5)); bolts.push([boltPts(x0, y0, x1, y1, n.id * 17 + k + win, 4, 4), 3200 + n.id * 8 + k, true]); }   // along its rim
+    }
+    for (let k = 0; k < 10; k++) { const a = hash2(k, win, n.id + 3005) * 6.283, d = Math.sqrt(hash2(k, win, n.id + 3006)) * n.r * nullSize(n) * 0.9; g.fillStyle = k % 3 ? '#5ff0ff' : '#fff'; g.fillRect(Math.round(cx + Math.cos(a) * d), Math.round(cy + Math.sin(a) * d), k % 4 ? 1 : 2, 1); }   // energy sparks
+    glowAt(cx, cy, n.r * 1.3, n.r * 1.3, 0.12 + 0.1 * hash2(n.id, win, 3007), GLOW_CYAN);
+  }
+  const F = world.front;
+  if (F) for (let k = 0; k < 16; k++) {                     // bolts LASHING OUT of the wall, into the map
+    if (hash2(k, win, 3010) < 0.45) continue;
+    const i = Math.floor(hash2(k, win, 3011) * FRONT_N), a = i / FRONT_N * 6.2832, r = frontDrawR(F, i), x0 = Math.cos(a) * r - camX, y0 = Math.sin(a) * r - camY;
+    if (x0 < -40 || x0 > W + 40 || y0 < -40 || y0 > H + 40) continue;
+    const l = 18 + hash2(k, win, 3012) * 40, b = a + Math.PI + (hash2(k, win, 3013) - 0.5) * 1.2;
+    bolts.push([boltPts(x0, y0, x0 + Math.cos(b) * l, y0 + Math.sin(b) * l, k * 11 + win, 5, 5), 3300 + k, true]);
+    glowAt(x0, y0, 16, 16, 0.5, GLOW_CYAN);
+  }
+  if (bolts.length) drawBolts(bolts, 0, 0, CYAN_BOLTS, 0.9);
+}
+// ...and it SOUNDS electric when you're near it
+function pureCrackleSound(dt) {
+  if (!cyanWorld() || !player) return;
+  let near = 0;
+  for (const n of world.nulls) if (n.burn < 1) near = Math.max(near, clamp(1 - (Math.hypot(player.x - n.x, player.y - n.y) - n.r) / 160, 0, 1));
+  if (world.front) near = Math.max(near, clamp(1 - (frontAt(world.front, Math.atan2(player.y, player.x)) - Math.hypot(player.x, player.y)) / 160, 0, 1));
+  if (near > 0 && rnd() < dt * 14 * near) SFX.crackle(near * 0.6, rr(-0.5, 0.5));
 }
 function drawFrontRim(camX, camY) {
   const F = world.front; if (!F) return;
@@ -7207,7 +7264,8 @@ function splitShard(s, a) {
 //  (It doesn't fear The Anchor's light the way Beamers do — it has to come
 //  close for that.)
 // =====================================================================
-const MAW = { open: 1.1, lock: 0.3, rest: 1.8 };   // (how long the lightning lasts: CFG.mawZap)
+const MAW = { open: 1.1, lock: 0.3, rest: 1.8 };
+const mawWidth = () => CFG.mawWidth * ((world && world.opt.mawWide) || 1);   // (a sector can make its lightning WIDER)   // (how long the lightning lasts: CFG.mawZap)
 function updateMaws(dt) {
   for (const m of world.maws) {
     m.t += dt; m.fin += dt * (m.state === 'open' ? 6 : 2);
@@ -7287,7 +7345,7 @@ function grownLine(line, k) {
 function mawTouch(m, dt) {
   const B = m.bolt; if (!B || S.mode !== 'play') return;
   const gk = mawGrowK(m), mainL = grownLine(B.main, gk), brs = B.branches.filter(br => br.k / (B.main.length - 1) < gk).map(br => grownLine(br, clamp((gk - br.k / (B.main.length - 1)) * 4, 0, 1)));
-  const on = [mainL, ...brs].some(line => { for (let j = 1; j < line.length; j++) if (segDistB(player.x, player.y, line[j - 1][0], line[j - 1][1], line[j][0], line[j][1]) < (line === mainL ? CFG.mawWidth : CFG.mawWidth * 0.6)) return true; return false; });   // (WIDE lightning)
+  const on = [mainL, ...brs].some(line => { for (let j = 1; j < line.length; j++) if (segDistB(player.x, player.y, line[j - 1][0], line[j - 1][1], line[j][0], line[j][1]) < (line === mainL ? mawWidth() : mawWidth() * 0.6)) return true; return false; });   // (WIDE lightning)
   if (!on) return;
   if (rnd() < dt * 30) particles.push({ x: player.x + rr(-5, 5), y: player.y + rr(-5, 5), vx: rr(-60, 60), vy: rr(-60, 60), life: 0.3, max: 0.3, col: rnd() < 0.5 ? '#fff' : '#8a6cff', s: 1, streak: true });
   if (S.shield) {
@@ -7356,7 +7414,7 @@ function drawMawBolts(camX, camY) {
     // a WIDE body of lightning first: thick soft strokes along the bolt (the branches a bit thinner), then the crackling bolt on top
     g.save(); g.globalCompositeOperation = 'lighter'; g.lineCap = 'round'; g.lineJoin = 'round';
     bolts.forEach(([pts], bi) => {
-      const w = CFG.mawWidth * 2 * (bi ? 0.6 : 1) * (0.85 + 0.15 * Math.sin(S.t * 30 + bi));
+      const w = mawWidth() * 2 * (bi ? 0.6 : 1) * (0.85 + 0.15 * Math.sin(S.t * 30 + bi));
       for (const [lw, col, a] of [[w, red ? '#a00000' : '#3a2cff', 0.35], [w * 0.55, red ? '#ff0000' : '#8a6cff', 0.5], [w * 0.2, '#fff', 0.6]]) {
         g.globalAlpha = a * f; g.strokeStyle = col; g.lineWidth = lw; g.beginPath(); pts.forEach(([x, y], i) => i ? g.lineTo(x, y) : g.moveTo(x, y)); g.stroke();
       }
@@ -7538,7 +7596,7 @@ function dangerPattern() {
   const c = makeCanvas(128, 128), x = c.getContext('2d'), im = x.createImageData(128, 128);
   const pal = [[10, 2, 18], [20, 5, 34], [34, 8, 56], [54, 14, 88], [96, 26, 150]];
   for (let y = 0; y < 128; y++) for (let xx = 0; xx < 128; xx++) {
-    const v = tileNoise(xx, y, 32, 1401) * 0.6 + tileNoise(xx, y, 16, 1402) * 0.4;
+    const v = tileNoise(xx, y, 32, 1401, 128) * 0.6 + tileNoise(xx, y, 16, 1402, 128) * 0.4;   // (period 128 = the tile's own size, so it joins up with itself: no seams)
     let col = pal[Math.min(4, Math.max(0, Math.floor((v - 0.25) * 7)))];
     if (hash2(xx, y, 1403) < 0.003) col = [220, 120, 255];
     const i = (y * 128 + xx) * 4; im.data[i] = col[0]; im.data[i + 1] = col[1]; im.data[i + 2] = col[2]; im.data[i + 3] = 255;
@@ -8453,6 +8511,762 @@ function skipBossIntro() {
 }
 </script>
 <script>
+// V0ID3D — galaxy.js: REALITY 2, GALAXY (sector 1: SUNRIVERS) — planets, suns, black holes and the creatures living among them
+"use strict";
+
+// =====================================================================
+//  THE GALAXY. Its maps are full of SPACE THINGS:
+//    SUNS          solid and burning hot: touch one = 25 damage, and it throws
+//                  you back. In SUNRIVERS they come in winding LINES (rivers)
+//                  and clumps.
+//    SOLIDS        planets and rocks — some of them MASSIVE. You can't walk
+//                  through them; DASHING into one = 5 damage (and a bounce).
+//    BLACK HOLES   a gravity field pulls you in (harder the closer you get);
+//                  inside the swirling middle: 5 damage every 0.2 seconds.
+//  The border doesn't hurt here: a strong WIND just pushes you back.
+//
+//  ...and the creatures (most of them covered in Purification):
+//    CRATERWORMS   green worms resting in the craters of planets. Come close
+//                  and one PEEKS out... then SWISHES out at you and bites.
+//    VOIDLINGS     tiny dots with tails and sharp teeth, in swarms of 5-25.
+//                  Each bite is small — but there are a LOT of them. Dash
+//                  through them or hold up your shield to pop them.
+//    STONEWALKERS  stone creatures walking along a planet's surface (they
+//                  can't leave it). When you're close they spit ACID.
+//    RIFTTRAVELERS (rare) long purple-and-black worms that dive into RIFTS
+//                  and come out of other ones. They RAM you and fire energy
+//                  BEAMS — they hit HARD.
+//  A corrupted podium's blast (and the ending's wave) destroys them all.
+// =====================================================================
+const GAL = {
+  sunDmg: 25, sunBounce: 330,
+  solidDmg: 5, solidBounce: 1.6,
+  holeField: 7, holeKill: 1.45, holePull: 130, holeTick: 0.2, holeDmg: 5,
+  wormReach: 140, wormPeek: 0.6, wormOut: 0.28, wormHold: 0.35, wormBack: 0.5, wormRest: 1.5, wormDmg: 12,
+  walkSpeed: 20, walkSight: 240, walkFire: 1.9, acidSpeed: 150, acidRange: 320, acidDmg: 10, poolLife: 2.6, poolR: 14, poolDmg: 3,
+  vlSpeed: 92, vlSight: 300, vlDmg: 2, vlCd: 0.8,
+  rtSpeed: 85, rtSegs: 16, rtGap: 9, rtRamWind: 0.75, rtRam: 0.55, rtRamSpeed: 340, rtRamDmg: 30, rtBeamWind: 1.0, rtBeam: 0.6, rtBeamLen: 360, rtBeamDps: 35, rtTouch: 8,
+};
+const GLOW_SUN = makeSoftDot(255, 150, 40, 128);           // a warm orange glow
+const GLOW_GREEN = makeSoftDot(80, 255, 110, 64);          // the Craterworms' + the acid's green glow
+
+// ---------- little helpers ----------
+// smooth random "value noise": random numbers on a grid, blended between
+function vnoise(x, y, seed) {
+  const ix = Math.floor(x), iy = Math.floor(y), fx = x - ix, fy = y - iy, sx = fx * fx * (3 - 2 * fx), sy = fy * fy * (3 - 2 * fy);
+  const a = hash2(ix, iy, seed), b = hash2(ix + 1, iy, seed), c = hash2(ix, iy + 1, seed), d = hash2(ix + 1, iy + 1, seed);
+  return lerp(lerp(a, b, sx), lerp(c, d, sx), sy);
+}
+// is (x, y) clear of every sun, planet and black-hole field? (pad = extra room)
+function galaxyFree(w, x, y, pad = 0) {
+  if (!w.suns) return true;
+  for (const s of w.suns) if (Math.hypot(s.x - x, s.y - y) < s.r + pad) return false;
+  for (const s of w.solids) if (Math.hypot(s.x - x, s.y - y) < s.r + pad) return false;
+  for (const h of w.holes) if (Math.hypot(h.x - x, h.y - y) < h.r * GAL.holeField * 0.8 + pad) return false;
+  return true;
+}
+const randIn = (R, [a, b]) => a + Math.floor(R() * (b - a + 1));
+
+// =====================================================================
+//  MAKING THE MAP (from genWorld, before the podiums)
+// =====================================================================
+function genGalaxy(w, R, G) {
+  w.suns = []; w.solids = []; w.holes = []; w.rifts = []; w.acid = []; w.pools = [];
+  const inMap = (x, y, pad) => Math.hypot(x, y) + pad < edgeRadiusAt(w.edge, Math.atan2(y, x)) - 60;
+  const clearMid = (x, y, r) => Math.hypot(x, y) - r > 430;              // (The Anchor needs room)
+  // BLACK HOLES first (they need the most space)
+  for (let k = 0, n = randIn(R, G.holes); k < 4000 && w.holes.length < n; k++) {
+    const a = R() * 6.283, d = 650 + R() * (edgeRadiusAt(w.edge, a) - 850), x = Math.cos(a) * d, y = Math.sin(a) * d, r = 36 + R() * 12, F = r * GAL.holeField;
+    if (!clearMid(x, y, F) || !inMap(x, y, F * 0.6) || w.holes.some(h => Math.hypot(h.x - x, h.y - y) < h.r * GAL.holeField + F + 200)) continue;
+    w.holes.push({ x, y, r, id: w.holes.length, ph: R() * 6 });
+  }
+  // SOLIDS: a couple of MASSIVE planets, the rest smaller rocks
+  const nSol = randIn(R, G.solids);
+  for (let k = 0; k < 6000 && w.solids.length < nSol; k++) {
+    const big = w.solids.length < 2, r = big ? 170 + R() * 110 : 45 + R() * R() * 110;
+    const a = R() * 6.283, d = 500 + Math.sqrt(R()) * (edgeRadiusAt(w.edge, a) - 600), x = Math.cos(a) * d, y = Math.sin(a) * d;
+    if (!clearMid(x, y, r) || !inMap(x, y, r) || !galaxyFree(w, x, y, r + 130)) continue;
+    const craters = [];
+    for (let c = 0, n = Math.min(9, 1 + Math.floor(r / 32)); c < n * 3 && craters.length < n; c++) {
+      const ca = R() * 6.283, cd = Math.sqrt(R()) * r * 0.8, cr = r * (0.06 + R() * 0.12);
+      const cx = Math.cos(ca) * cd, cy = Math.sin(ca) * cd;
+      if (cd + cr > r * 0.92 || craters.some(q => Math.hypot(q.x - cx, q.y - cy) < q.r + cr + 3)) continue;
+      craters.push({ x: cx, y: cy, r: cr });
+    }
+    w.solids.push({ x, y, r, craters, pal: Math.floor(R() * SOLID_PALS.length), seed: Math.floor(R() * 9999), id: w.solids.length, spr: null });
+  }
+  // SUNS: winding RIVERS of suns (each one a step further along a wobbly line), and a few clumps
+  const trySun = (x, y, r) => { if (!clearMid(x, y, r + 60) || !inMap(x, y, r + 30) || !galaxyFree(w, x, y, r + 70)) return false; w.suns.push({ x, y, r, id: w.suns.length, ph: R() * 6, seed: Math.floor(R() * 9999) }); return true; };
+  for (let rv = 0, n = randIn(R, G.rivers); rv < n; rv++) {
+    for (let tries = 0; tries < 80; tries++) {
+      const a = R() * 6.283, d = 600 + R() * (edgeRadiusAt(w.edge, a) - 900);
+      let x = Math.cos(a) * d, y = Math.sin(a) * d, h = R() * 6.283, r = 34 + R() * 34;
+      if (!trySun(x, y, r)) continue;
+      for (let s = 1, len = randIn(R, [5, 9]); s < len; s++) {
+        h += (R() - 0.5) * 1.0;
+        const r2 = 30 + R() * 36, step = r + r2 + 60 + R() * 70;              // (always a gap you can squeeze through)
+        let placed = false;
+        for (let t = 0; t < 6 && !placed; t++) { const hh = h + (R() - 0.5) * 0.6 * t; if (trySun(x + Math.cos(hh) * step, y + Math.sin(hh) * step, r2)) { x += Math.cos(hh) * step; y += Math.sin(hh) * step; h = hh; placed = true; } }
+        if (!placed) break;
+        r = r2;
+      }
+      break;
+    }
+  }
+  for (let cl = 0; cl < (G.clumps || 0); cl++) {
+    for (let tries = 0; tries < 60; tries++) {
+      const a = R() * 6.283, d = 600 + R() * (edgeRadiusAt(w.edge, a) - 900), cx = Math.cos(a) * d, cy = Math.sin(a) * d;
+      if (!galaxyFree(w, cx, cy, 200)) continue;
+      for (let s = 0, n = randIn(R, [3, 4]); s < n; s++) { const sa = R() * 6.283, sd = s ? 110 + R() * 60 : 0; trySun(cx + Math.cos(sa) * sd, cy + Math.sin(sa) * sd, 28 + R() * 24); }
+      break;
+    }
+  }
+  bakeGalaxy(w);
+}
+// a spot for a PODIUM: about half of them sit right on a planet's surface
+function galaxyPodiumSpot(w, R) {
+  const bigs = w.solids.filter(s => s.r >= 70);
+  for (let tries = 0; tries < 3000; tries++) {
+    let x, y;
+    if (bigs.length && R() < 0.5) { const s = bigs[Math.floor(R() * bigs.length)], a = R() * 6.283; x = s.x + Math.cos(a) * (s.r + 34); y = s.y + Math.sin(a) * (s.r + 34); }
+    else { const a = R() * 6.283, d = 480 + Math.sqrt(R()) * (edgeRadiusAt(w.edge, a) - 720); x = Math.cos(a) * d; y = Math.sin(a) * d; }
+    const r = Math.hypot(x, y);
+    if (r < 480 || r > edgeRadiusAt(w.edge, Math.atan2(y, x)) - 260) continue;
+    if (!galaxyFree(w, x, y, 26) || w.podiums.some(p => Math.hypot(p.x - x, p.y - y) < (tries < 1500 ? 340 : 220))) continue;   // (crowded map: allow them a bit closer)
+    return [x, y];
+  }
+  return null;
+}
+
+// the CREATURES (from genWorld, after the podiums)
+function genGalaxyLife(w, R, E) {
+  w.worms = []; w.walkers = []; w.voidlings = []; w.swarms = []; w.travelers = [];
+  // CRATERWORMS: each lives in its own crater near a planet's edge
+  const sols = w.solids.slice();
+  for (let i = 0, n = diffCount(E.worms); i < n && sols.length; i++) {
+    for (let tries = 0; tries < 30; tries++) {
+      const s = sols[Math.floor(R() * sols.length)], a = R() * 6.283, cr = 11 + R() * 4, cd = s.r - cr - 6;
+      const cx = s.x + Math.cos(a) * cd, cy = s.y + Math.sin(a) * cd, mx = s.x + Math.cos(a) * (s.r + 4), my = s.y + Math.sin(a) * (s.r + 4);
+      if (w.worms.some(o => Math.hypot(o.cx - cx, o.cy - cy) < 90) || w.podiums.some(p => Math.hypot(p.x - mx, p.y - my) < 120)) continue;
+      s.craters.push({ x: cx - s.x, y: cy - s.y, r: cr, worm: true }); s.spr = null;          // (its crater, baked into the planet)
+      w.worms.push({ cx, cy, a, s, state: 'hide', t: rnd() * 2, len: 0, tip: [cx, cy], id: w.worms.length, ph: R() * 6 });
+      break;
+    }
+  }
+  // STONEWALKERS: on planets big enough to walk around
+  const walkable = w.solids.filter(s => s.r >= 60);
+  for (let i = 0, n = diffCount(E.walkers); i < n && walkable.length; i++) {
+    const s = walkable[Math.floor(R() * walkable.length)];
+    w.walkers.push({ s, a: R() * 6.283, dir: R() < 0.5 ? -1 : 1, t: 0, next: 2 + R() * 4, fire: 1 + R(), aim: 0, id: i, step: 0, x: 0, y: 0 });
+  }
+  // VOIDLINGS: swarms of 5-25
+  for (let i = 0, n = randIn(R, diffCount(E.swarms)); i < n; i++) {
+    for (let tries = 0; tries < 200; tries++) {
+      const a = R() * 6.283, d = 520 + Math.sqrt(R()) * (edgeRadiusAt(w.edge, a) - 650), x = Math.cos(a) * d, y = Math.sin(a) * d;
+      if (!galaxyFree(w, x, y, 120) || w.swarms.some(o => Math.hypot(o.hx - x, o.hy - y) < 380)) continue;
+      const sw = { hx: x, hy: y, hunt: 0, id: i };
+      w.swarms.push(sw);
+      for (let k = 0, m = randIn(R, E.swarmSize); k < m; k++) { const va = R() * 6.283, vd = R() * 40; w.voidlings.push({ x: x + Math.cos(va) * vd, y: y + Math.sin(va) * vd, vx: 0, vy: 0, sw, cd: 0, off: R() * 6.283, tail: [], id: k + i * 40 }); }
+      break;
+    }
+  }
+  // RIFTTRAVELERS (rare) + the rifts they travel through
+  const nT = R() < E.travelers * diff().spawn ? (diff().name === 'BRUTAL' ? 2 : 1) : 0;
+  if (nT) {
+    for (let k = 0; k < 400 && w.rifts.length < 4; k++) {
+      const a = R() * 6.283, d = 520 + Math.sqrt(R()) * (edgeRadiusAt(w.edge, a) - 650), x = Math.cos(a) * d, y = Math.sin(a) * d;
+      if (!galaxyFree(w, x, y, 80) || w.rifts.some(o => Math.hypot(o.x - x, o.y - y) < 450) || w.podiums.some(p => Math.hypot(p.x - x, p.y - y) < 160)) continue;
+      w.rifts.push({ x, y, a: R() * 3.14, len: 30 + R() * 12, flash: 0, id: w.rifts.length });
+    }
+    for (let i = 0; i < nT && w.rifts.length >= 2; i++) w.travelers.push({ state: 'hidden', t: 0, hideT: 6 + i * 6 + R() * 4, x: 0, y: 0, a: 0, segs: [], gap: 0, id: i, atkCd: 2, hp: 1 });
+  }
+}
+
+// =====================================================================
+//  PICTURES OF THE PLANETS + SUNS (baked once, when the map is made)
+// =====================================================================
+const SOLID_PALS = [
+  [[10, 10, 14], [20, 20, 28], [34, 34, 44], [52, 52, 64], [74, 74, 90], [104, 104, 122]],     // grey stone
+  [[14, 7, 6], [30, 15, 11], [50, 26, 18], [72, 40, 26], [98, 60, 38], [130, 86, 58]],          // rust
+  [[6, 10, 18], [12, 21, 34], [22, 35, 54], [36, 53, 76], [56, 76, 104], [84, 106, 136]],      // icy blue
+  [[11, 7, 17], [22, 14, 32], [38, 24, 52], [56, 38, 74], [78, 56, 100], [110, 84, 132]],      // violet
+];
+function bakeGalaxy(w) { for (const s of w.solids) s.spr = null; for (const s of w.suns) s.spr = null; }
+// a planet, lit from the top-left like a ball: rocky noise, craters (each a
+// bowl: dark on the side toward the light, bright on the far rim), a bright edge
+function bakeSolid(b) {
+  const r = b.r, n = Math.ceil(r * 2 + 4), h = n / 2, c = makeCanvas(n, n), x = c.getContext('2d'), im = x.createImageData(n, n), D = im.data, pal = SOLID_PALS[b.pal], L = [-0.55, -0.6, 0.58];
+  for (let py = 0; py < n; py++) for (let px = 0; px < n; px++) {
+    const dx = (px + 0.5 - h) / r, dy = (py + 0.5 - h) / r, q = dx * dx + dy * dy; if (q > 1) continue;
+    const nz = Math.sqrt(1 - q);
+    let lit = 0.12 + 0.88 * clamp(L[0] * dx + L[1] * dy + L[2] * nz, 0, 1);
+    for (const cr of b.craters) {
+      const ex = (px + 0.5 - h - cr.x) / cr.r, ey = (py + 0.5 - h - cr.y) / cr.r;
+      if (ex > 1.3 || ex < -1.3 || ey > 1.3 || ey < -1.3) continue;      // (quick skip: nowhere near this crater)
+      const e = Math.sqrt(ex * ex + ey * ey);
+      if (e < 1) lit = lit * 0.7 + 0.3 * clamp(0.45 - (L[0] * ex + L[1] * ey) * 0.6, 0, 1) - (cr.worm ? 0.12 : 0);   // the bowl (a worm's crater: deeper, darker)
+      else if (e < 1.25) lit += 0.12 * clamp(-(L[0] * ex + L[1] * ey), -1, 1);                                     // its raised rim
+    }
+    const v = lit * (0.78 + 0.44 * (vnoise(px / 18, py / 18, 1700 + b.seed) * 0.6 + vnoise(px / 6, py / 6, 1800 + b.seed) * 0.4));
+    let col = pal[clamp(Math.floor(v * 6), 0, 5)];
+    if (q > 0.9 && L[0] * dx + L[1] * dy > 0.2) col = pal[5];                                                     // the bright edge on the lit side
+    const i = (py * n + px) * 4; D[i] = col[0]; D[i + 1] = col[1]; D[i + 2] = col[2]; D[i + 3] = 255;
+  }
+  x.putImageData(im, 0, 0);
+  return (b.spr = c);
+}
+// a sun: white-hot middle, yellow, orange, a deep red rim — with boiling granules
+function bakeSun(b) {
+  const r = b.r, n = Math.ceil(r * 2 + 4), h = n / 2, c = makeCanvas(n, n), x = c.getContext('2d'), im = x.createImageData(n, n), D = im.data;
+  const pal = [[150, 20, 0], [220, 60, 0], [255, 120, 10], [255, 170, 40], [255, 215, 90], [255, 245, 190], [255, 255, 240]];
+  for (let py = 0; py < n; py++) for (let px = 0; px < n; px++) {
+    const dx = (px + 0.5 - h) / r, dy = (py + 0.5 - h) / r, q = dx * dx + dy * dy; if (q > 1) continue;
+    const v = Math.sqrt(1 - q) * 0.62 + vnoise(px / 5, py / 5, 1900 + b.seed) * 0.32 - 0.04;
+    const col = pal[clamp(Math.floor(v * 7), 0, 6)], i = (py * n + px) * 4;
+    D[i] = col[0]; D[i + 1] = col[1]; D[i + 2] = col[2]; D[i + 3] = 255;
+  }
+  x.putImageData(im, 0, 0);
+  return (b.spr = c);
+}
+
+// =====================================================================
+//  YOU vs. THE SPACE THINGS (every frame, from updatePlay). true = you died.
+// =====================================================================
+function galaxyPlayer(dt) {
+  S.sunCd = Math.max(0, (S.sunCd || 0) - dt); S.ramCd = Math.max(0, (S.ramCd || 0) - dt);
+  let sunK = 0, holeK = 0, inHole = false;
+  for (const s of world.suns) {
+    const dx = player.x - s.x, dy = player.y - s.y, d = Math.hypot(dx, dy) || 1, ux = dx / d, uy = dy / d, min = s.r + 5;
+    sunK = Math.max(sunK, clamp(1 - (d - s.r) / 170, 0, 1));
+    if (d >= min) continue;
+    player.x = s.x + ux * min; player.y = s.y + uy * min;
+    if (S.sunCd > 0) continue;
+    // BURNED: 25 damage, and thrown back
+    S.sunCd = 0.6; player.dashT = 0; player.vx = ux * GAL.sunBounce; player.vy = uy * GAL.sunBounce; S.launchT = 0.3;
+    burstParticles(player.x, player.y, 30, 1.4, ['#fff', '#ffd040', '#ff8a10', '#e04000']); GSFX.sunBurn();
+    hurt(GAL.sunDmg, 'sun', false, true); if (S.mode !== 'play') return true;
+  }
+  for (const s of world.solids) {
+    const dx = player.x - s.x, dy = player.y - s.y, d = Math.hypot(dx, dy) || 1, ux = dx / d, uy = dy / d, min = s.r + 5;
+    if (d >= min) continue;
+    player.x = s.x + ux * min; player.y = s.y + uy * min;
+    const vn = player.vx * ux + player.vy * uy;
+    if ((player.dashT > 0 || Math.hypot(player.vx, player.vy) > 260) && S.ramCd <= 0) {
+      // RAMMED IT: 5 damage, and you bounce off
+      S.ramCd = 0.5; player.dashT = 0; S.launchT = 0.2;
+      if (vn < 0) { player.vx -= GAL.solidBounce * vn * ux; player.vy -= GAL.solidBounce * vn * uy; }
+      burstParticles(player.x - ux * 5, player.y - uy * 5, 18, 1, SOLID_DUST[s.pal]); GSFX.thud(clamp((s.x - player.x) / 250, -1, 1)); S.shake = Math.max(S.shake, 4);
+      hurt(GAL.solidDmg, 'solid', false, true); if (S.mode !== 'play') return true;
+    } else if (vn < 0) { player.vx -= vn * ux; player.vy -= vn * uy; }       // (walking into it: you slide along the surface)
+  }
+  for (const h of world.holes) {
+    const dx = h.x - player.x, dy = h.y - player.y, d = Math.hypot(dx, dy) || 1, F = h.r * GAL.holeField;
+    if (d > F) continue;
+    holeK = Math.max(holeK, 1 - d / F);
+    // GRAVITY: pulls you toward its middle, much harder up close
+    const pull = Math.min(d * 3, GAL.holePull * Math.pow(1 - d / F, 1.5));
+    player.x += dx / d * pull * dt; player.y += dy / d * pull * dt;
+    if (rnd() < dt * 20 * (1 - d / F)) { const a = rnd() * 6.283, rr2 = rr(10, 20); particles.push({ x: player.x + Math.cos(a) * rr2, y: player.y + Math.sin(a) * rr2, vx: dx / d * 80, vy: dy / d * 80, life: 0.4, max: 0.4, col: rnd() < 0.5 ? '#b48cff' : '#fff', s: 1, streak: true }); }
+    if (d < h.r * GAL.holeKill) inHole = true;
+  }
+  if (inHole) {                                             // INSIDE: 5 damage every 0.2 seconds
+    S.holeT = (S.holeT ?? GAL.holeTick) + dt;
+    while (S.holeT >= GAL.holeTick) { S.holeT -= GAL.holeTick; hurt(GAL.holeDmg, 'blackhole', true); if (S.mode !== 'play') return true; }
+  } else S.holeT = GAL.holeTick;
+  GSFX.sunSet(sunK); GSFX.holeSet(holeK);
+  return false;
+}
+const SOLID_DUST = [['#4c4c5e', '#8c8ca0', '#fff'], ['#68261a', '#b87a54', '#fff'], ['#20324c', '#7896be', '#fff'], ['#36224a', '#9c78b8', '#fff']];
+
+// =====================================================================
+//  THE CREATURES
+// =====================================================================
+function updateGalaxyLife(dt) {
+  if (!world.worms) return;
+  const safeP = !world.anchorGone && Math.hypot(player.x, player.y) < CFG.beamerSafe - 30;
+  // ---------- CRATERWORMS ----------
+  for (const m of world.worms) {
+    if (m.dead) continue;
+    m.t += dt;
+    const mx = m.s.x + Math.cos(m.a) * m.s.r, my = m.s.y + Math.sin(m.a) * m.s.r, d = Math.hypot(player.x - mx, player.y - my), pan = clamp((mx - player.x) / 250, -1, 1);
+    if (m.state === 'hide') { m.len = 0; if (d < GAL.wormReach && m.t > 0 && !safeP) { m.state = 'peek'; m.t = 0; GSFX.wormPeek(pan); } }
+    else if (m.state === 'peek') {                           // its head rises out of the crater, trembling... (a warning)
+      m.len = 6 + Math.sin(m.t * 30) * 2;
+      m.aim = Math.atan2(player.y - m.cy, player.x - m.cx);
+      if (m.t > GAL.wormPeek) { m.state = 'out'; m.t = 0; m.bit = false; GSFX.wormLunge(pan); m.reach = Math.min(GAL.wormReach + m.s.r - Math.hypot(mx - m.cx, my - m.cy), Math.hypot(player.x - m.cx, player.y - m.cy) + 14); }
+      if (d > GAL.wormReach * 1.3) { m.state = 'back'; m.t = 0; }
+    } else if (m.state === 'out') {                          // SWISH: it shoots out at you
+      m.len = m.reach * smoothstep(Math.min(1, m.t / GAL.wormOut));
+      const tx = m.cx + Math.cos(m.aim) * m.len, ty = m.cy + Math.sin(m.aim) * m.len;
+      if (!m.bit && Math.hypot(player.x - tx, player.y - ty) < 13) {
+        m.bit = true;
+        if (S.shield) { shieldBlock(); SFX.reflect(); m.state = 'back'; m.t = 0; burstParticles(tx, ty, 14, 1, ['#50ff70', '#fff']); }
+        else { hurt(GAL.wormDmg, 'worm', false, true); burstParticles(tx, ty, 16, 1, ['#50ff70', '#1e8a2e', '#fff']); if (S.mode !== 'play') return; }
+      }
+      if (m.t > GAL.wormOut + GAL.wormHold) { m.state = 'back'; m.t = 0; m.from = m.len; }
+    } else if (m.state === 'back') {                         // ...and slides back in
+      m.len = (m.from ?? m.len) * (1 - smoothstep(Math.min(1, m.t / GAL.wormBack)));
+      if (m.t > GAL.wormBack) { m.state = 'hide'; m.t = -GAL.wormRest; m.from = undefined; }
+    }
+  }
+  // ---------- STONEWALKERS ----------
+  for (const k of world.walkers) {
+    if (k.dead) continue;
+    k.t += dt;
+    const s = k.s, nx = Math.cos(k.a), ny = Math.sin(k.a);
+    k.x = s.x + nx * (s.r + 7); k.y = s.y + ny * (s.r + 7);
+    const d = Math.hypot(player.x - k.x, player.y - k.y), pan = clamp((k.x - player.x) / 250, -1, 1);
+    // it can see you if you're in front of its side of the planet
+    const sees = d < GAL.walkSight && !safeP && ((player.x - k.x) * nx + (player.y - k.y) * ny) > -20;
+    if (sees) {
+      k.aim = Math.atan2(player.y - k.y, player.x - k.x); k.fire -= dt; k.alert = true;
+      if (k.fire <= 0) {
+        k.fire = GAL.walkFire / diff().speed; k.spitT = 0.25;
+        world.acid.push({ x: k.x, y: k.y, vx: Math.cos(k.aim) * GAL.acidSpeed * diff().speed, vy: Math.sin(k.aim) * GAL.acidSpeed * diff().speed, d: 0, trail: [] });
+        GSFX.acidSpit(pan);
+      }
+    } else {
+      k.alert = false; k.fire = Math.max(k.fire, 0.6);
+      if (k.t > k.next) { k.dir = -k.dir; k.next = k.t + rr(3, 7); }
+      k.a += k.dir * GAL.walkSpeed / s.r * dt; k.step += dt * 8;               // walking along the surface (it can't leave it)
+    }
+    k.spitT = Math.max(0, (k.spitT || 0) - dt);
+  }
+  // their ACID: flies until it hits you, a planet or a sun... or runs out and leaves a PUDDLE
+  for (const a of world.acid) {
+    a.x += a.vx * dt; a.y += a.vy * dt; a.d += Math.hypot(a.vx, a.vy) * dt;
+    a.trail.push([a.x, a.y]); if (a.trail.length > 6) a.trail.shift();
+    const pan = clamp((a.x - player.x) / 250, -1, 1);
+    if (Math.hypot(player.x - a.x, player.y - a.y) < 8) {
+      a.gone = true;
+      if (S.shield) { shieldBlock(); SFX.reflect(); burstParticles(a.x, a.y, 12, 1, ['#50ff70', '#fff']); }
+      else { hurt(GAL.acidDmg, 'acid', false, true); burstParticles(a.x, a.y, 16, 1, ['#50ff70', '#a0ff80', '#1e8a2e']); GSFX.acidHit(pan); if (S.mode !== 'play') return; }
+    } else if (world.suns.some(s => Math.hypot(s.x - a.x, s.y - a.y) < s.r) || world.solids.some(s => Math.hypot(s.x - a.x, s.y - a.y) < s.r)) { a.gone = true; burstParticles(a.x, a.y, 10, 0.8, ['#50ff70', '#1e8a2e']); }
+    else if (a.d > GAL.acidRange) { a.gone = true; world.pools.push({ x: a.x, y: a.y, t: GAL.poolLife, ph: rnd() * 6 }); GSFX.acidHit(pan); }
+  }
+  world.acid = world.acid.filter(a => !a.gone);
+  let inPool = false;
+  for (const p of world.pools) { p.t -= dt; if (Math.hypot(player.x - p.x, player.y - p.y) < GAL.poolR) inPool = true; }
+  world.pools = world.pools.filter(p => p.t > 0);
+  if (inPool) { S.poolT = (S.poolT ?? 0.5) + dt; while (S.poolT >= 0.5) { S.poolT -= 0.5; hurt(GAL.poolDmg, 'acid', true); if (S.mode !== 'play') return; } } else S.poolT = 0.5;
+  // ---------- VOIDLINGS ----------
+  for (const sw of world.swarms) sw.hunt = Math.max(0, sw.hunt - dt);
+  for (const v of world.voidlings) if (!safeP && Math.hypot(player.x - v.x, player.y - v.y) < GAL.vlSight) v.sw.hunt = 3;   // (one sees you: the whole swarm comes)
+  for (const v of world.voidlings) {
+    if (v.dead) continue;
+    v.cd = Math.max(0, v.cd - dt);
+    const hunting = v.sw.hunt > 0;
+    // where it wants to go: around YOU (each one at its own angle, so they surround you) — or drifting round its home
+    const ring = hunting ? 10 + 8 * Math.sin(S.t * 2 + v.off) : 40;
+    const gx = (hunting ? player.x : v.sw.hx) + Math.cos(v.off + S.t * (hunting ? 1.5 : 0.4)) * ring, gy = (hunting ? player.y : v.sw.hy) + Math.sin(v.off + S.t * (hunting ? 1.5 : 0.4)) * ring;
+    const dx = gx - v.x, dy = gy - v.y, dl = Math.hypot(dx, dy) || 1, sp = (hunting ? GAL.vlSpeed : 30) * diff().speed;
+    let ax = dx / dl * sp - v.vx, ay = dy / dl * sp - v.vy;
+    for (const o of world.voidlings) { if (o === v || o.sw !== v.sw || o.dead) continue; const ox = v.x - o.x, oy = v.y - o.y, od = Math.hypot(ox, oy); if (od < 9 && od > 0) { ax += ox / od * 120; ay += oy / od * 120; } }   // (keep a little apart)
+    const ad = Math.hypot(v.x, v.y); if (ad < CFG.beamerSafe + 20 && !world.anchorGone) { ax += v.x / ad * 300; ay += v.y / ad * 300; }   // (they fear The Anchor)
+    v.vx += ax * Math.min(1, dt * 4); v.vy += ay * Math.min(1, dt * 4);
+    for (const h of world.holes) { const hx = h.x - v.x, hy = h.y - v.y, hd = Math.hypot(hx, hy), F = h.r * GAL.holeField; if (hd < F) { const pl = GAL.holePull * 1.3 * Math.pow(1 - hd / F, 1.5); v.vx += hx / hd * pl * dt * 3; v.vy += hy / hd * pl * dt * 3; } if (hd < h.r) { v.dead = true; burstParticles(v.x, v.y, 6, 0.6, ['#b48cff', '#fff']); } }   // (they get SUCKED IN)
+    v.x += v.vx * dt; v.y += v.vy * dt;
+    for (const s of world.solids) { const sx = v.x - s.x, sy = v.y - s.y, sd = Math.hypot(sx, sy); if (sd < s.r + 3) { v.x = s.x + sx / sd * (s.r + 3); v.y = s.y + sy / sd * (s.r + 3); } }
+    for (const s of world.suns) if (Math.hypot(v.x - s.x, v.y - s.y) < s.r + 2) { v.dead = true; burstParticles(v.x, v.y, 8, 0.7, ['#ffd040', '#fff']); }   // (they BURN)
+    const lim = edgeRadiusAt(world.edge, Math.atan2(v.y, v.x)) - 50, er = Math.hypot(v.x, v.y); if (er > lim) { v.x *= lim / er; v.y *= lim / er; }
+    v.tail.unshift([v.x, v.y]); if (v.tail.length > 5) v.tail.pop();
+    const pd = Math.hypot(player.x - v.x, player.y - v.y);
+    if (pd < 12 && (player.dashT > 0 || S.shield)) { killVoidling(v); continue; }   // DASH through them / your SHIELD: pop!
+    if (pd < 7 && v.cd <= 0) { v.cd = GAL.vlCd; v.biteT = 0.15; hurt(GAL.vlDmg, 'voidling', true); GSFX.voidBite(); if (S.mode !== 'play') return; }
+    v.biteT = Math.max(0, (v.biteT || 0) - dt);
+  }
+  world.voidlings = world.voidlings.filter(v => !v.dead);
+  // ---------- RIFTTRAVELERS ----------
+  for (const T of world.travelers) updateTraveler(T, dt, safeP);
+  world.travelers = world.travelers.filter(T => !T.dead);
+  for (const r of world.rifts) r.flash = Math.max(0, r.flash - dt * 1.5);
+}
+function killVoidling(v) { v.dead = true; burstParticles(v.x, v.y, 8, 0.7, ['#8a6cff', '#fff', '#b48cff']); GSFX.voidPop(clamp((v.x - player.x) / 250, -1, 1)); }
+
+// a Rifttraveler: hidden (travelling between rifts) -> emerge -> hunt (ram / beam) -> dive back in
+function updateTraveler(T, dt, safeP) {
+  T.t += dt;
+  const sp = diff().speed, pan = clamp((T.x - player.x) / 250, -1, 1);
+  if (T.state === 'hidden') {
+    if (T.t < T.hideT) return;
+    // come out of the rift closest to you (if one is near enough), otherwise any
+    const near = world.rifts.filter(r => Math.hypot(r.x - player.x, r.y - player.y) < 900);
+    const r = (near.length ? near : world.rifts)[Math.floor(rnd() * (near.length || world.rifts.length))];
+    T.rift = r; T.x = r.x; T.y = r.y; T.a = Math.atan2(player.y - r.y, player.x - r.x); T.segs = Array.from({ length: GAL.rtSegs }, () => ({ x: r.x, y: r.y }));
+    T.state = 'emerge'; T.t = 0; T.gap = 0; r.flash = 1; GSFX.rtEmerge(clamp((r.x - player.x) / 250, -1, 1));
+    explode(r.x, r.y, 'dark', 0.8, false);
+    return;
+  }
+  const dx = player.x - T.x, dy = player.y - T.y, d = Math.hypot(dx, dy), toP = Math.atan2(dy, dx);
+  let speed = GAL.rtSpeed * sp, turn = 2.0;
+  if (T.state === 'emerge') { T.gap = Math.min(GAL.rtGap, T.t / 1.2 * GAL.rtGap); if (T.t > 1.2) { T.state = 'hunt'; T.t = 0; T.outT = rr(9, 13); } }
+  else if (T.state === 'hunt') {
+    T.atkCd -= dt;
+    if (T.atkCd <= 0 && d < 240 && !safeP) {
+      if (d < 200 && rnd() < 0.55) { T.state = 'ramWind'; T.t = 0; GSFX.rtCharge(GAL.rtRamWind, pan); }
+      else { T.state = 'beamWind'; T.t = 0; GSFX.rtCharge(GAL.rtBeamWind, pan); }
+    }
+    if (T.t > T.outT) { T.state = 'dive'; T.t = 0; T.rift = world.rifts.reduce((b, r) => Math.hypot(r.x - T.x, r.y - T.y) < Math.hypot(b.x - T.x, b.y - T.y) ? r : b); }
+  } else if (T.state === 'ramWind') {                       // pulls back, aiming... then LOCKS
+    speed = -25; if (T.t < GAL.rtRamWind - 0.2) T.lockA = toP; turn = 5;
+    if (T.t > GAL.rtRamWind) { T.state = 'ram'; T.t = 0; T.hit = false; T.a = T.lockA; GSFX.rtRam(pan); }
+  } else if (T.state === 'ram') {                           // RAM: straight at where you were
+    speed = GAL.rtRamSpeed * sp; turn = 0;
+    if (!T.hit && Math.hypot(player.x - T.x, player.y - T.y) < 16) {
+      T.hit = true;
+      if (S.shield) { shieldBlock(); SFX.reflect(); T.state = 'hunt'; T.t = 0; T.atkCd = 2.5; T.a += Math.PI; }
+      else { hurt(GAL.rtRamDmg, 'traveler', false, true); player.vx = Math.cos(T.a) * 300; player.vy = Math.sin(T.a) * 300; S.launchT = 0.3; S.shake = Math.max(S.shake, 9); if (S.mode !== 'play') return; }
+    }
+    if (T.t > GAL.rtRam) { T.state = 'hunt'; T.t = 0; T.atkCd = rr(2.2, 3.2); }
+  } else if (T.state === 'beamWind') {                      // stops, its head glowing... a thin line shows where the BEAM will go
+    speed = 10; if (T.t < GAL.rtBeamWind - 0.3) T.lockA = toP; turn = 4;
+    if (T.t > GAL.rtBeamWind) { T.state = 'beam'; T.t = 0; T.touch = 0; T.blockT = 0; GSFX.rtBeam(pan); S.shake = Math.max(S.shake, 4); }
+  } else if (T.state === 'beam') {
+    speed = 0; turn = 0; T.a = T.lockA;
+    const ex = T.x + Math.cos(T.a) * GAL.rtBeamLen, ey = T.y + Math.sin(T.a) * GAL.rtBeamLen;
+    if (segDistB(player.x, player.y, T.x, T.y, ex, ey) < 10) {
+      if (S.shield) { T.blockT -= dt; if (T.blockT <= 0) { T.blockT = 1; shieldBlock(); SFX.reflect(); } }
+      else { T.touch += GAL.rtBeamDps * dt; while (T.touch >= GAL.rtBeamDps / 5) { T.touch -= GAL.rtBeamDps / 5; hurt(GAL.rtBeamDps / 5, 'traveler', true); if (S.mode !== 'play') return; } }
+    }
+    if (T.t > GAL.rtBeam) { T.state = 'hunt'; T.t = 0; T.atkCd = rr(2.2, 3.2); }
+  } else if (T.state === 'dive') {                          // back into a rift...
+    const r = T.rift, rd = Math.hypot(r.x - T.x, r.y - T.y);
+    T.lockA = Math.atan2(r.y - T.y, r.x - T.x); turn = 4;
+    if (rd < 10) { speed = 0; T.x = r.x; T.y = r.y; T.gap = Math.max(0, T.gap - dt * 9); if (!T.inT) { T.inT = true; r.flash = 1; GSFX.rtDive(pan); } if (T.gap <= 0) { T.state = 'hidden'; T.t = 0; T.hideT = rr(4, 8); T.inT = false; T.atkCd = 2; } }
+    else speed = Math.max(speed, Math.min(160, rd * 2));
+  }
+  // steering: toward you while hunting (with a snaky wiggle), else toward its lock
+  const want = T.state === 'hunt' || T.state === 'emerge' ? toP + Math.sin(T.t * 3 + T.id) * 0.5 : T.lockA ?? T.a;
+  if (T.state === 'hunt') { const ad = Math.hypot(T.x, T.y); if (ad < CFG.beamerSafe + 60 && !world.anchorGone) T.a += clamp(angDiff(T.a, Math.atan2(T.y, T.x)), -3 * dt, 3 * dt); }   // (it fears The Anchor too)
+  T.a += clamp(angDiff(T.a, want), -turn * dt, turn * dt);
+  T.x += Math.cos(T.a) * speed * dt; T.y += Math.sin(T.a) * speed * dt;
+  const lim = edgeRadiusAt(world.edge, Math.atan2(T.y, T.x)) - 60, er = Math.hypot(T.x, T.y); if (er > lim) { T.x *= lim / er; T.y *= lim / er; T.a += Math.PI * dt; }
+  // the body: each segment follows the one in front, T.gap apart
+  let px = T.x, py = T.y;
+  for (const s of T.segs) { const sx = s.x - px, sy = s.y - py, sd = Math.hypot(sx, sy); if (sd > T.gap) { s.x = px + sx / sd * T.gap; s.y = py + sy / sd * T.gap; } px = s.x; py = s.y; }
+  // touching ANY part of it hurts
+  T.touchCd = Math.max(0, (T.touchCd || 0) - dt);
+  if (T.touchCd <= 0 && T.state !== 'ram' && T.segs.some(s => Math.hypot(player.x - s.x, player.y - s.y) < 9)) { T.touchCd = 1; hurt(GAL.rtTouch, 'traveler', false, true); }
+}
+
+// a corrupted podium's BLAST (or the ending's wave) destroys every creature within R of (x, y)
+function galaxyKillNear(x, y, R) {
+  if (!world.worms) return;
+  const near = (ex, ey) => Math.hypot(ex - x, ey - y) < R;
+  for (const m of world.worms) if (!m.dead && near(m.cx, m.cy)) { m.dead = true; explode(m.cx, m.cy, 'red', 0.8, false); }
+  for (const k of world.walkers) if (!k.dead && near(k.x, k.y)) { k.dead = true; explode(k.x, k.y, 'red', 0.8, false); }
+  for (const v of world.voidlings) if (!v.dead && near(v.x, v.y)) { v.dead = true; burstParticles(v.x, v.y, 6, 0.7, ['#ff0000', '#fff']); }
+  for (const T of world.travelers) if (!T.dead && T.state !== 'hidden' && near(T.x, T.y)) { T.dead = true; for (const s of T.segs) explode(s.x, s.y, 'red', 0.5, false); }
+  world.worms = world.worms.filter(m => !m.dead); world.walkers = world.walkers.filter(k => !k.dead);
+  world.voidlings = world.voidlings.filter(v => !v.dead); world.travelers = world.travelers.filter(T => !T.dead);
+}
+
+// =====================================================================
+//  DRAWING
+// =====================================================================
+// the SKY: three layers of stars (the far ones move slower), clouds of nebula, a distant spiral galaxy
+function drawGalaxySky(camX, camY) {
+  const T = S.t;
+  for (const [p, col, a] of [[0.04, GLOW_DARK, 0.18], [0.06, GLOW_BLUE, 0.22], [0.08, GLOW_SUN, 0.07]]) {
+    for (let i = 0; i < 3; i++) { const x = (hash2(i, p * 100, 2001) * 2400 - camX * p) % 1400, y = (hash2(i, p * 100, 2002) * 1600 - camY * p) % 900; glowAt(((x % 1400) + 1400) % 1400 - 380, ((y % 900) + 900) % 900 - 250, 260, 180, a, col); }
+  }
+  // the distant spiral galaxy
+  const gx = ((-camX * 0.03 + 160) % 900 + 900) % 900 - 130, gy = ((-camY * 0.03 + 90) % 600 + 600) % 600 - 120;
+  glowAt(gx, gy, 46, 26, 0.35, GLOW_BLUE);
+  for (let k = 0; k < 90; k++) { const arm = k % 2, u = (k >> 1) / 45, ang = u * 5.5 + arm * Math.PI + T * 0.03, r = u * 42; g.globalAlpha = 0.6 * (1 - u * 0.7); g.fillStyle = k % 5 ? '#8a7cff' : '#fff'; g.fillRect(Math.round(gx + Math.cos(ang) * r), Math.round(gy + Math.sin(ang) * r * 0.45), 1, 1); }
+  g.globalAlpha = 1;
+  for (const L of [{ p: 0.1, cell: 60, seed: 2011, n: 0.6 }, { p: 0.25, cell: 80, seed: 2021, n: 0.5 }, { p: 0.5, cell: 110, seed: 2031, n: 0.45 }]) {
+    const ox = camX * L.p, oy = camY * L.p;
+    for (let i = Math.floor(ox / L.cell); i <= Math.floor((ox + W) / L.cell); i++) for (let j = Math.floor(oy / L.cell); j <= Math.floor((oy + H) / L.cell); j++) {
+      if (hash2(i, j, L.seed) > L.n) continue;
+      const x = Math.round(i * L.cell + hash2(i, j, L.seed + 1) * L.cell - ox), y = Math.round(j * L.cell + hash2(i, j, L.seed + 2) * L.cell - oy), h = hash2(i, j, L.seed + 3);
+      g.globalAlpha = (0.3 + L.p) * (0.6 + 0.4 * Math.sin(T * (1 + h * 3) + h * 20));
+      g.fillStyle = h < 0.15 ? '#ffd8a0' : h < 0.35 ? '#a0b8ff' : '#fff';
+      g.fillRect(x, y, L.p > 0.4 && h > 0.85 ? 2 : 1, 1);
+    }
+  }
+  g.globalAlpha = 1;
+}
+const onScreen = (x, y, r) => x > -r && x < W + r && y > -r && y < H + r;
+// suns, planets, black holes, rifts, acid puddles (under the creatures)
+function drawGalaxyBodies(camX, camY) {
+  const T = S.t;
+  // BLACK HOLES: dust spiralling in, a swirling disk, a thin ring of light, black in the middle
+  for (const h of world.holes) {
+    const x = h.x - camX, y = h.y - camY, F = h.r * GAL.holeField; if (!onScreen(x, y, F)) continue;
+    for (let k = 0; k < 70; k++) {
+      const u = (hash2(k, h.id, 2101) + T * (0.06 + hash2(k, h.id, 2102) * 0.05)) % 1, rad = F * (1 - u) + h.r * u, ang = hash2(k, h.id, 2103) * 6.283 + u * 7 + T * 0.2;
+      g.globalAlpha = 0.15 + u * 0.6; g.fillStyle = k % 4 ? '#6e5cff' : '#fff'; g.fillRect(Math.round(x + Math.cos(ang) * rad), Math.round(y + Math.sin(ang) * rad), 1, 1);
+    }
+    g.globalAlpha = 0.25; g.fillStyle = '#b48cff';
+    for (let i = 0; i < 64; i++) { if ((i + Math.floor(T * 4)) % 4 === 0) continue; const a = i / 64 * 6.283 - T * 0.15; g.fillRect(Math.round(x + Math.cos(a) * F), Math.round(y + Math.sin(a) * F), 1, 1); }   // the edge of its pull
+    g.globalAlpha = 1;
+    glowAt(x, y, h.r * 3.4, h.r * 3.4, 0.55, GLOW_DARK);
+    for (let k = 0; k < 150; k++) {                           // the accretion disk: inner dots race round faster
+      const u = hash2(k, h.id, 2111), rad = h.r * (1.1 + u * 1.1), ang = hash2(k, h.id, 2112) * 6.283 + T * (3.2 - u * 2.4);
+      g.fillStyle = u < 0.25 ? '#fff' : u < 0.55 ? '#d0a0ff' : u < 0.8 ? '#8a6cff' : '#3a2cff'; g.fillRect(Math.round(x + Math.cos(ang) * rad), Math.round(y + Math.sin(ang) * rad), u < 0.3 ? 2 : 1, 1);
+    }
+    g.fillStyle = '#000'; g.beginPath(); g.arc(x, y, h.r, 0, 6.2832); g.fill();
+    g.strokeStyle = '#f0e0ff'; g.lineWidth = 1; g.beginPath(); g.arc(x, y, h.r + 1, 0, 6.2832); g.stroke();
+    g.globalAlpha = 0.5; g.fillStyle = '#fff';
+    for (let i = 0; i < 40; i++) { if ((i + Math.floor(T * 6)) % 3) continue; const a = i / 40 * 6.283 + T; g.fillRect(Math.round(x + Math.cos(a) * h.r * GAL.holeKill), Math.round(y + Math.sin(a) * h.r * GAL.holeKill), 1, 1); }   // where it starts to HURT
+    g.globalAlpha = 1;
+  }
+  // PLANETS (solids)
+  for (const s of world.solids) {
+    const x = s.x - camX, y = s.y - camY; if (!onScreen(x, y, s.r + 30)) continue;
+    const spr = s.spr || bakeSolid(s);
+    glowAt(x, y, s.r * 1.25, s.r * 1.25, 0.18, GLOW_BLUE);                                       // a faint atmosphere
+    g.drawImage(spr, Math.round(x - spr.width / 2), Math.round(y - spr.height / 2));
+  }
+  // SUNS: a huge warm glow, flickering flares round the rim, boiling surface, loops of fire
+  for (const s of world.suns) {
+    const x = s.x - camX, y = s.y - camY; if (!onScreen(x, y, s.r * 3)) continue;
+    const spr = s.spr || bakeSun(s), p = 0.92 + 0.08 * Math.sin(T * 3 + s.ph);
+    glowAt(x, y, s.r * 2.6 * p, s.r * 2.6 * p, 0.35, GLOW_SUN);
+    g.fillStyle = '#e05a00';
+    for (let i = 0; i < 24; i++) {                            // corona spikes
+      const a = i / 24 * 6.283 + T * 0.1 + s.ph, l = s.r * (0.18 + 0.14 * Math.sin(T * 4 + i * 1.7 + s.ph));
+      g.globalAlpha = 0.55; g.beginPath(); g.moveTo(x + Math.cos(a - 0.08) * s.r, y + Math.sin(a - 0.08) * s.r); g.lineTo(x + Math.cos(a) * (s.r + l), y + Math.sin(a) * (s.r + l)); g.lineTo(x + Math.cos(a + 0.08) * s.r, y + Math.sin(a + 0.08) * s.r); g.closePath(); g.fill();
+    }
+    g.globalAlpha = 1;
+    for (let k = 0; k < 2; k++) {                             // a loop of fire arching off the surface
+      const a0 = s.ph * 3 + k * 2.6 + T * 0.05, u = (T * 0.25 + k * 0.5 + s.ph) % 1;
+      for (let j = 0; j <= 14; j++) { const v = j / 14, a = a0 + (v - 0.5) * 0.5, rr2 = s.r + Math.sin(v * Math.PI) * s.r * 0.45 * Math.sin(u * Math.PI); g.fillStyle = j % 3 ? '#ffb030' : '#fff0c0'; g.globalAlpha = Math.sin(u * Math.PI); g.fillRect(Math.round(x + Math.cos(a) * rr2), Math.round(y + Math.sin(a) * rr2), 2, 2); }
+    }
+    g.globalAlpha = 1;
+    g.drawImage(spr, Math.round(x - spr.width / 2), Math.round(y - spr.height / 2));
+    for (let k = 0; k < 6; k++) { const a = hash2(k, Math.floor(T * 6), s.id + 2201) * 6.283, d = Math.sqrt(hash2(k, Math.floor(T * 6), s.id + 2202)) * s.r * 0.85; g.fillStyle = '#fff8e0'; g.fillRect(Math.round(x + Math.cos(a) * d), Math.round(y + Math.sin(a) * d), 2, 1); }   // flashes on the surface
+  }
+  // RIFTS (where the Rifttravelers come and go): black tears with purple edges
+  for (const r of world.rifts) {
+    const x = r.x - camX, y = r.y - camY; if (!onScreen(x, y, 60)) continue;
+    const c = Math.cos(r.a), s2 = Math.sin(r.a), pts = [];
+    for (let i = 0; i <= 12; i++) { const u = i / 12 - 0.5, wd = Math.sin((u + 0.5) * Math.PI) * 7 * (1 + r.flash) + (hash2(i, Math.floor(T * 10), r.id + 2301) - 0.5) * 2; pts.push([u * r.len, wd]); }
+    for (let i = 12; i >= 0; i--) { const u = i / 12 - 0.5, wd = Math.sin((u + 0.5) * Math.PI) * 7 * (1 + r.flash) + (hash2(i, Math.floor(T * 10), r.id + 2302) - 0.5) * 2; pts.push([u * r.len, -wd]); }
+    glowAt(x, y, r.len * (1.2 + r.flash), r.len * (0.8 + r.flash), 0.5 + r.flash * 0.5, GLOW_DARK);
+    g.fillStyle = '#000'; g.beginPath(); pts.forEach(([u, v], i) => { const px = x + c * u - s2 * v, py = y + s2 * u + c * v; i ? g.lineTo(px, py) : g.moveTo(px, py); }); g.closePath(); g.fill();
+    g.strokeStyle = r.flash > 0.3 ? '#f0c0ff' : '#a020ff'; g.lineWidth = 1; g.stroke();
+    if (hash2(r.id, Math.floor(T * 8), 2303) < 0.3) { g.fillStyle = '#f0c0ff'; g.fillRect(Math.round(x + c * rr(-r.len / 2, r.len / 2)), Math.round(y + s2 * rr(-r.len / 2, r.len / 2)), 1, 1); }
+  }
+  // ACID puddles
+  for (const p of world.pools) {
+    const x = p.x - camX, y = p.y - camY; if (!onScreen(x, y, 30)) continue;
+    const k = Math.min(1, p.t / 0.5);
+    glowAt(x, y, 20, 16, 0.4 * k, GLOW_GREEN);
+    g.globalAlpha = 0.8 * k; g.fillStyle = '#0e3a12'; g.beginPath(); g.ellipse(x, y, GAL.poolR, GAL.poolR * 0.75, p.ph, 0, 6.2832); g.fill();
+    g.strokeStyle = '#50ff70'; g.stroke(); g.globalAlpha = k;
+    for (let i = 0; i < 4; i++) { const u = (S.t * 0.8 + i * 0.27) % 1; g.fillStyle = '#a0ff80'; g.fillRect(Math.round(x + Math.cos(i * 1.7 + p.ph) * 6), Math.round(y + Math.sin(i * 2.3 + p.ph) * 4 - u * 4), 1, 1); }   // bubbling
+    g.globalAlpha = 1;
+  }
+}
+// purification flecks: little violet sparkles on a creature (they're covered in it)
+function pureFlecks(x, y, r, id, n = 3) {
+  for (let k = 0; k < n; k++) { const a = hash2(k, id, 2401) * 6.283 + S.t * 0.5, d = r * (0.3 + hash2(k, id, 2402) * 0.6); g.fillStyle = Math.floor(S.t * 5 + k + id) % 3 ? '#8a6cff' : '#e0d8ff'; g.fillRect(Math.round(x + Math.cos(a) * d), Math.round(y + Math.sin(a) * d), 1, 1); }
+}
+// a filled polygon from a list of points
+function gPoly(pts, fill, stroke) { g.beginPath(); pts.forEach(([x, y], i) => i ? g.lineTo(x, y) : g.moveTo(x, y)); g.closePath(); if (fill) { g.fillStyle = fill; g.fill(); } if (stroke) { g.strokeStyle = stroke; g.stroke(); } }
+// the creatures
+function drawGalaxyLife(camX, camY) {
+  if (!world.worms) return;
+  const T = S.t;
+  g.lineWidth = 1;
+  // ---------- CRATERWORMS: armoured green segments with bristles, a wave of light
+  // rippling down the body, and a head that splits open into THREE jaws ----------
+  for (const m of world.worms) {
+    const cx = m.cx - camX, cy = m.cy - camY; if (!onScreen(cx, cy, 180)) continue;
+    if (m.state === 'hide') {                                // its crater glows faintly... two eyes glint now and then
+      glowAt(cx, cy, 14, 14, 0.18 + 0.08 * Math.sin(T * 2 + m.ph), GLOW_GREEN);
+      if (Math.sin(T * 0.9 + m.ph) > 0.6) { g.fillStyle = '#a0ff80'; const a = m.a + Math.PI / 2; g.fillRect(Math.round(cx + Math.cos(a) * 2) - 1, Math.round(cy + Math.sin(a) * 2), 2, 1); g.fillRect(Math.round(cx - Math.cos(a) * 2), Math.round(cy - Math.sin(a) * 2), 2, 1); }
+      if (hash2(m.id, Math.floor(T * 3), 2701) < 0.15) { g.fillStyle = '#50ff70'; g.fillRect(Math.round(cx + rr(-3, 3)), Math.round(cy + rr(-3, 3)), 1, 1); }   // a bubble
+      continue;
+    }
+    if (m.state === 'peek') glowAt(cx, cy, 22, 22, 0.4 + 0.3 * Math.sin(T * 25), GLOW_GREEN);   // the crater LIGHTS UP: it's coming
+    const aim = m.aim ?? m.a, n = Math.max(2, Math.ceil(m.len / 5)), pts = [];
+    for (let i = 0; i <= n; i++) { const u = i / n, l = m.len * u, wig = Math.sin(u * 7 - T * 14 + m.ph) * 5 * Math.sin(u * Math.PI); pts.push([cx + Math.cos(aim) * l - Math.sin(aim) * wig, cy + Math.sin(aim) * l + Math.cos(aim) * wig]); }
+    const [hx, hy] = pts[n], open = m.state === 'out' ? 1 : m.state === 'peek' ? 0.25 + 0.2 * Math.sin(T * 30) : 0.15;
+    glowAt(hx, hy, 22, 22, 0.55, GLOW_GREEN);
+    for (let i = 0; i <= n; i++) {
+      const [px, py] = pts[i], r = 3 + (i / n) * 3.5, [qx, qy] = pts[Math.min(n, i + 1)], [ox, oy] = pts[Math.max(0, i - 1)];
+      const da = Math.atan2(qy - oy, qx - ox), nx = -Math.sin(da), ny = Math.cos(da);
+      g.strokeStyle = '#2a8a3a'; for (const sd of [-1, 1]) { const l = r + 2 + Math.sin(T * 20 + i) * 1; g.beginPath(); g.moveTo(px + nx * sd * r, py + ny * sd * r); g.lineTo(px + nx * sd * l - Math.cos(da) * 2, py + ny * sd * l - Math.sin(da) * 2); g.stroke(); }   // bristles
+      g.fillStyle = '#0c3a14'; g.beginPath(); g.arc(px, py, r, 0, 6.2832); g.fill();
+      g.fillStyle = i % 2 ? '#1e8a2e' : '#167022'; g.beginPath(); g.arc(px - Math.cos(da) * 0.8, py - Math.sin(da) * 0.8, r * 0.8, 0, 6.2832); g.fill();   // an armour plate
+      const wave = Math.max(0, Math.sin(i * 0.9 - T * 9));                                      // the wave of light running down it
+      g.strokeStyle = wave > 0.6 ? '#c0ffb0' : '#50ff70'; g.beginPath(); g.arc(px, py, r, 0, 6.2832); g.stroke();
+      if (wave > 0.3) { g.fillStyle = '#a0ff80'; g.globalAlpha = wave; g.fillRect(Math.round(px) - 1, Math.round(py) - 1, 2, 2); g.globalAlpha = 1; }
+      if (i % 3 === 1) pureFlecks(px, py, r, m.id * 20 + i, 2);
+    }
+    // the head: three jaws opening like a flower, teeth along their edges, a glowing throat
+    glowAt(hx, hy, 6 + open * 6, 6 + open * 6, 0.9, GLOW_GREEN);
+    g.fillStyle = '#000'; g.beginPath(); g.arc(hx, hy, 3 + open * 2.5, 0, 6.2832); g.fill();
+    g.fillStyle = '#a0ff80'; g.fillRect(Math.round(hx) - 1, Math.round(hy) - 1, 2, 2);                                 // the throat
+    for (let k = 0; k < 3; k++) {
+      const ja = aim + k / 3 * 6.2832 + Math.PI / 3, sp = open * 0.6, base = 5, tip = 9 + open * 4;
+      const p0 = [hx + Math.cos(ja - 0.5) * base, hy + Math.sin(ja - 0.5) * base], p1 = [hx + Math.cos(ja + sp * 0.3) * tip, hy + Math.sin(ja + sp * 0.3) * tip], p2 = [hx + Math.cos(ja + 0.5) * base, hy + Math.sin(ja + 0.5) * base];
+      gPoly([p0, p1, p2], '#14601e', '#50ff70');
+      g.fillStyle = '#fff'; for (let t = 1; t <= 2; t++) { const u = t / 3; g.fillRect(Math.round(lerp(p0[0], p1[0], u)), Math.round(lerp(p0[1], p1[1], u)), 1, 1); }   // teeth
+    }
+    if (m.state === 'peek') { g.globalAlpha = 0.4 + 0.4 * Math.sin(T * 20); g.strokeStyle = '#50ff70'; g.setLineDash([2, 3]); g.beginPath(); g.moveTo(cx, cy); g.lineTo(cx + Math.cos(aim) * GAL.wormReach, cy + Math.sin(aim) * GAL.wormReach); g.stroke(); g.setLineDash([]); g.globalAlpha = 1; }   // (a warning: where it will strike)
+    if (m.state === 'out' && rnd() < 0.3) particles.push({ x: m.cx + Math.cos(aim) * m.len, y: m.cy + Math.sin(aim) * m.len, vx: rr(-20, 20), vy: rr(-20, 20), life: 0.4, max: 0.4, col: '#50ff70', s: 1 });   // slime flying off
+  }
+  // ---------- STONEWALKERS: a cracked stone shell with violet Purification
+  // CRYSTALS growing out of it, six jointed legs, and one big eye that follows you ----------
+  for (const k of world.walkers) {
+    const x = k.x - camX, y = k.y - camY; if (!onScreen(x, y, 40)) continue;
+    const a = k.a, nx = Math.cos(a), ny = Math.sin(a), tx = -ny, ty = nx, P = (u, v) => [x + tx * u + nx * v, y + ty * u + ny * v];   // (u along the surface, v outward)
+    for (let i = 0; i < 6; i++) {                            // legs: hip -> knee (up) -> foot (on the ground), stepping
+      const side = i < 3 ? -1 : 1, j = i % 3, hip = P(side * (3 + j * 2.5), 3), lift = Math.max(0, Math.sin(k.step + i * 2.1)) * 3, swing = Math.cos(k.step + i * 2.1) * 2;
+      const knee = P(side * (8 + j * 3) + swing, 6 + lift), foot = P(side * (10 + j * 3) + swing * 1.5, -6 + lift * 0.5);
+      g.strokeStyle = '#6a6a7c'; g.beginPath(); g.moveTo(...hip); g.lineTo(...knee); g.lineTo(...foot); g.stroke();
+      g.fillStyle = '#9c9cb0'; g.fillRect(Math.round(knee[0]), Math.round(knee[1]), 1, 1);
+    }
+    const shell = []; for (let i = 0; i <= 12; i++) { const u = i / 12 * Math.PI, bump = 1 + 0.08 * Math.sin(i * 2.7 + k.id); shell.push(P(Math.cos(u) * 11 * bump, Math.sin(u) * 9 * bump)); }
+    gPoly(shell, '#2c2c38', '#8c8ca0');
+    g.strokeStyle = '#18181e'; for (const [u0, v0, u1, v1] of [[-6, 2, -2, 7], [-2, 7, 3, 4], [3, 4, 7, 6], [-1, 2, 2, 0]]) { g.beginPath(); g.moveTo(...P(u0, v0)); g.lineTo(...P(u1, v1)); g.stroke(); }   // cracks in the stone
+    // Purification CRYSTALS growing out of its back, glowing and pulsing
+    for (let i = 0; i < 3; i++) {
+      const u = (i - 1) * 5, v = 8 - Math.abs(i - 1) * 2, h = 6 + (i === 1 ? 3 : 0), lean = (i - 1) * 0.35, pul = 0.6 + 0.4 * Math.sin(T * 3 + i + k.id);
+      const b0 = P(u - 1.8, v - 1), b1 = P(u + 1.8, v - 1), tip = P(u + lean * h, v + h);
+      glowAt(tip[0], tip[1], 8, 8, 0.5 * pul, PURE_GLOW);
+      gPoly([b0, tip, b1], '#3a2c8a', '#b48cff');
+      g.fillStyle = pul > 0.8 ? '#fff' : '#e0d8ff'; g.fillRect(Math.round(lerp(b0[0], tip[0], 0.6)), Math.round(lerp(b0[1], tip[1], 0.6)), 1, 1);
+    }
+    // the EYE (at the front): white with a green pupil that follows you; it glows when it's about to spit
+    const ep = P(0, 2.5), ea = k.alert ? k.aim : a, spit = k.spitT > 0;
+    g.fillStyle = '#d8d8e0'; g.beginPath(); g.arc(ep[0], ep[1], 2.6, 0, 6.2832); g.fill();
+    g.fillStyle = k.alert ? '#50ff70' : '#2a8a3a'; g.fillRect(Math.round(ep[0] + Math.cos(ea) * 1.2) - 1, Math.round(ep[1] + Math.sin(ea) * 1.2) - 1, 2, 2);
+    if (k.alert) glowAt(ep[0], ep[1], 10 + (spit ? 8 : 0), 10 + (spit ? 8 : 0), spit ? 1 : 0.6, GLOW_GREEN);
+    if (k.alert && hash2(k.id, Math.floor(T * 6), 2702) < 0.3) particles.push({ x: k.x + nx * 2, y: k.y + ny * 2, vx: rr(-6, 6), vy: rr(-6, 6), life: 0.5, max: 0.5, col: '#50ff70', s: 1 });   // acid dripping
+  }
+  // ---------- VOIDLINGS: a teardrop of dark Purification with a wavy tail, two
+  // glowing eyes (they burn brighter when the swarm hunts) and snapping jaws full of teeth ----------
+  for (const v of world.voidlings) {
+    const x = v.x - camX, y = v.y - camY; if (!onScreen(x, y, 20)) continue;
+    const hunt = v.sw.hunt > 0, a = Math.atan2(v.vy, v.vx), c = Math.cos(a), s = Math.sin(a), P = (f, sd) => [x + c * f - s * sd, y + s * f + c * sd];
+    glowAt(x, y, 11, 11, hunt ? 0.6 : 0.4, PURE_GLOW);
+    for (let i = 1; i < v.tail.length; i++) {                // the tail: tapering, waving
+      const [tx, ty] = v.tail[i], wv = Math.sin(T * 16 + i + v.off) * i * 0.6;
+      g.globalAlpha = 0.85 - i * 0.15; g.fillStyle = i % 2 ? '#6e5cff' : '#b48cff'; g.fillRect(Math.round(tx - camX - s * wv), Math.round(ty - camY + c * wv), Math.max(1, 3 - i * 0.5), Math.max(1, 3 - i * 0.5));
+    }
+    g.globalAlpha = 1;
+    gPoly([P(4, 0), P(1, 3.5), P(-4, 1.5), P(-5, 0), P(-4, -1.5), P(1, -3.5)], '#0c0826', '#8a6cff');                  // the body
+    const bite = (v.biteT > 0 || Math.sin(T * 18 + v.off) > 0.4) ? 1 : 0;
+    g.fillStyle = '#000'; gPoly([P(3, 0), P(6 + bite, 2 + bite), P(6 + bite, -2 - bite)], '#000');                         // the mouth...
+    g.fillStyle = '#fff'; for (const sd of [-1, 1]) { const [t1x, t1y] = P(5 + bite, sd * (1.5 + bite)), [t2x, t2y] = P(6.5 + bite, sd * (0.8 + bite * 0.6)); g.fillRect(Math.round(t1x), Math.round(t1y), 1, 1); g.fillRect(Math.round(t2x), Math.round(t2y), 1, 1); }   // ...and its fangs
+    for (const sd of [-1, 1]) { const [ex, ey] = P(1, sd * 1.6); g.fillStyle = hunt ? '#fff' : '#d0c0ff'; g.fillRect(Math.round(ex), Math.round(ey), 1, 1); if (hunt) glowAt(ex, ey, 4, 4, 0.8, PURE_GLOW); }   // eyes
+  }
+  // ---------- RIFTTRAVELERS: armoured plates with little legs, a pulse of purple
+  // light running down the spine, a STINGER at the tail — and a horned head with four eyes ----------
+  for (const Tr of world.travelers) {
+    if (Tr.state === 'hidden') continue;
+    const hide = (sx, sy) => Tr.rift && (Tr.state === 'emerge' || Tr.state === 'dive') && Math.hypot(sx - Tr.rift.x, sy - Tr.rift.y) < 6;   // (still inside the rift)
+    const segs = Tr.segs, L = segs.length;
+    for (let i = L - 1; i >= 0; i--) {
+      const sg = segs[i]; if (hide(sg.x, sg.y)) continue;
+      const x = sg.x - camX, y = sg.y - camY; if (!onScreen(x, y, 24)) continue;
+      const prev = i ? segs[i - 1] : Tr, da = Math.atan2(prev.y - sg.y, prev.x - sg.x), c = Math.cos(da), s = Math.sin(da), r = 7.5 - i / L * 4;
+      const P = (f, sd) => [x + c * f - s * sd, y + s * f + c * sd];
+      for (const sd of [-1, 1]) { const st = Math.sin(T * 14 + i * 1.3 + (sd > 0 ? Math.PI : 0)) * 2; g.strokeStyle = '#5a1a8a'; g.beginPath(); g.moveTo(...P(0, sd * r * 0.8)); g.lineTo(...P(st, sd * (r + 4))); g.lineTo(...P(st - 2, sd * (r + 6))); g.stroke(); }   // little legs, rippling
+      gPoly([P(r, 0), P(r * 0.5, r), P(-r * 0.6, r * 0.9), P(-r, 0), P(-r * 0.6, -r * 0.9), P(r * 0.5, -r)], '#07010e', '#7a10d0');   // the armour plate
+      const pulse = Math.max(0, Math.sin(i * 0.7 - T * 8));
+      g.strokeStyle = pulse > 0.5 ? '#f0c0ff' : '#3a0860'; g.beginPath(); g.moveTo(...P(-r * 0.5, 0)); g.lineTo(...P(r * 0.5, 0)); g.stroke();   // the spine
+      if (pulse > 0.7) glowAt(x, y, 8, 8, pulse * 0.8, GLOW_DARK);
+      if (i === L - 1) {                                      // the STINGER
+        const [bx, by] = P(-r, 0), [sx, sy] = P(-r - 9, 0);
+        gPoly([P(-r, 2.5), [sx, sy], P(-r, -2.5)], '#3a0860', '#d070ff');
+        glowAt(sx, sy, 7, 7, 0.6 + 0.3 * Math.sin(T * 10), GLOW_DARK); g.fillStyle = '#fff'; g.fillRect(Math.round(sx), Math.round(sy), 1, 1);
+      }
+    }
+    const x = Tr.x - camX, y = Tr.y - camY; if (hide(Tr.x, Tr.y) || !onScreen(x, y, 30)) continue;
+    const c = Math.cos(Tr.a), s = Math.sin(Tr.a), P = (f, sd) => [x + c * f - s * sd, y + s * f + c * sd], wind = Tr.state === 'ramWind' || Tr.state === 'beamWind';
+    glowAt(x, y, 24, 24, wind ? 0.7 + 0.3 * Math.sin(T * 30) : 0.45, GLOW_DARK);
+    if (Tr.state === 'beamWind') for (let k = 0; k < 8; k++) { const ang = hash2(k, Math.floor(T * 10), 2703) * 6.283, d = (1 - ((T * 3 + k / 8) % 1)) * 26; g.fillStyle = k % 2 ? '#f0c0ff' : '#a020ff'; g.fillRect(Math.round(x + Math.cos(ang) * d), Math.round(y + Math.sin(ang) * d), 1, 1); }   // energy being SUCKED INTO its head
+    for (const sd of [-1, 1]) {                             // serrated mandibles
+      const o = Tr.state === 'ram' ? 0.15 : wind ? 0.55 + 0.2 * Math.sin(T * 25) : 0.4, base = P(5, sd * 5), tip = [x + Math.cos(Tr.a + sd * o) * 17, y + Math.sin(Tr.a + sd * o) * 17], mid = [x + Math.cos(Tr.a + sd * (o + 0.35)) * 12, y + Math.sin(Tr.a + sd * (o + 0.35)) * 12];
+      gPoly([base, mid, tip, [lerp(base[0], tip[0], 0.6), lerp(base[1], tip[1], 0.6)]], '#1a0428', '#d070ff');
+    }
+    for (const sd of [-1, 1]) gPoly([P(-2, sd * 6), P(-12, sd * 11), P(-5, sd * 4)], '#1a0428', '#a020ff');   // horns, swept back
+    gPoly([P(9, 0), P(5, 7), P(-6, 8), P(-9, 0), P(-6, -8), P(5, -7)], '#05000a', '#a020ff');                       // the head plate
+    for (const [f, sd] of [[4, 2.5], [4, -2.5], [0.5, 4.5], [0.5, -4.5]]) { const [ex, ey] = P(f, sd), big = Math.abs(sd) < 3; glowAt(ex, ey, big ? 6 : 4, big ? 6 : 4, 0.9, GLOW_DARK); g.fillStyle = wind && Math.floor(T * 16) % 2 ? '#fff' : '#f0c0ff'; g.fillRect(Math.round(ex) - (big ? 1 : 0), Math.round(ey) - (big ? 1 : 0), big ? 2 : 1, big ? 2 : 1); }   // FOUR eyes
+    if (rnd() < 0.4) particles.push({ x: segs[L - 1].x, y: segs[L - 1].y, vx: rr(-10, 10), vy: rr(-10, 10), life: 0.6, max: 0.6, col: rnd() < 0.5 ? '#a020ff' : '#f0c0ff', s: 1 });   // a trail of purple sparks
+  }
+}
+// acid shots + the Rifttravelers' beams (on top of almost everything)
+function drawGalaxyShots(camX, camY) {
+  if (!world.acid) return;
+  for (const a of world.acid) {
+    a.trail.forEach(([tx, ty], i) => { g.globalAlpha = (i + 1) / a.trail.length * 0.6; g.fillStyle = '#50ff70'; g.fillRect(Math.round(tx - camX), Math.round(ty - camY), 2, 2); });
+    g.globalAlpha = 1; glowAt(a.x - camX, a.y - camY, 9, 9, 0.8, GLOW_GREEN);
+    g.fillStyle = '#a0ff80'; g.fillRect(Math.round(a.x - camX) - 2, Math.round(a.y - camY) - 2, 4, 4); g.fillStyle = '#fff'; g.fillRect(Math.round(a.x - camX) - 1, Math.round(a.y - camY) - 1, 1, 1);
+  }
+  for (const Tr of world.travelers) {
+    const x = Tr.x - camX, y = Tr.y - camY;
+    if (Tr.state === 'beamWind' && Tr.lockA !== undefined) {   // WARNING: a thin flickering line where the beam will go
+      const locked = Tr.t > GAL.rtBeamWind - 0.3; g.globalAlpha = locked ? 0.9 : 0.4; g.fillStyle = locked && Math.floor(S.t * 20) % 2 ? '#fff' : '#d070ff';
+      for (let d = 10; d < GAL.rtBeamLen; d += 6) g.fillRect(Math.round(x + Math.cos(Tr.lockA) * d), Math.round(y + Math.sin(Tr.lockA) * d), 2, 2);
+      g.globalAlpha = 1;
+    }
+    if (Tr.state === 'ramWind' && Tr.lockA !== undefined) { g.globalAlpha = 0.5; g.strokeStyle = '#d070ff'; g.setLineDash([3, 4]); g.beginPath(); g.moveTo(x, y); g.lineTo(x + Math.cos(Tr.lockA) * 190, y + Math.sin(Tr.lockA) * 190); g.stroke(); g.setLineDash([]); g.globalAlpha = 1; }
+    if (Tr.state === 'beam') {
+      const f = 1 - Tr.t / GAL.rtBeam, ex = x + Math.cos(Tr.a) * GAL.rtBeamLen, ey = y + Math.sin(Tr.a) * GAL.rtBeamLen;
+      g.save(); g.globalCompositeOperation = 'lighter'; g.lineCap = 'round';
+      for (const [lw, col, al] of [[18, '#3a0860', 0.5], [8, '#a020ff', 0.7], [3, '#fff', 0.9]]) { g.globalAlpha = al * (0.6 + 0.4 * f); g.strokeStyle = col; g.lineWidth = lw * (0.8 + 0.2 * Math.sin(S.t * 40)); g.beginPath(); g.moveTo(x, y); g.lineTo(ex, ey); g.stroke(); }
+      g.restore();
+      drawBolts([[boltPts(x, y, ex, ey, Math.floor(S.t * 20), 10, 6), 2500 + Tr.id, true]], 0, 0, PURPLE_BOLTS, f);
+    }
+  }
+}
+// the lights the space things give off (lighting.js)
+function galaxyLights(camX, camY) {
+  for (const s of world.suns) addLight(s.x - camX, s.y - camY, s.r * 2.8, 0.55, 1, 0.6, 0.2);
+  for (const r of world.rifts) addLight(r.x - camX, r.y - camY, 60 + r.flash * 80, 0.4 + r.flash * 0.6, 0.6, 0.15, 1);
+  for (const T of world.travelers || []) if (T.state !== 'hidden') addLight(T.x - camX, T.y - camY, 90, 0.6, 0.6, 0.15, 1);
+  for (const a of world.acid || []) addLight(a.x - camX, a.y - camY, 40, 0.5, 0.3, 1, 0.4);
+}
+
+// =====================================================================
+//  SOUNDS
+// =====================================================================
+// a looping noise "bed" whose volume follows k (wind, a sun's roar, a black hole's rumble)
+function loopNoise(key, k, vol, type, freq, q, lfo = 0) {
+  const ctx = AU.ctx; if (!ctx) return;
+  if (!AU[key]) {
+    if (k <= 0) return;
+    const s = ctx.createBufferSource(); s.buffer = AU.noise; s.loop = true;
+    const f = ctx.createBiquadFilter(); f.type = type; f.frequency.value = freq; f.Q.value = q;
+    if (lfo) { const o = ctx.createOscillator(), og = ctx.createGain(); o.frequency.value = lfo; og.gain.value = freq * 0.5; o.connect(og).connect(f.frequency); o.start(); }
+    const gn = ctx.createGain(); gn.gain.value = 0;
+    s.connect(f).connect(gn).connect(AU.master); s.start();
+    AU[key] = gn;
+  }
+  AU[key].gain.setTargetAtTime(k * k * vol, ctx.currentTime, 0.2);
+}
+const GSFX = {
+  windSet(k) { loopNoise('galWind', k, 0.5, 'bandpass', 520, 0.9, 0.35); },               // the WIND at the border (howling: its pitch wanders)
+  sunSet(k) { loopNoise('galSun', k, 0.25, 'lowpass', 380, 0.7, 0.8); },                   // a sun's ROAR when you're near
+  holeSet(k) { loopNoise('galHole', k, 0.55, 'lowpass', 110, 1.2, 0.15); },               // a black hole's deep RUMBLE
+  sunBurn() { burst(0.5, 0.6, 1200, 0.5, true, 0, 300); thump(0.8, 120, 40, 0.4); swoop(0.4, 900, 0.3, 'sawtooth', 2000, 0.06); },
+  thud(pan) { thump(0.7, 90, 35, 0.3); burst(0.15, 0.4, 600, 1, true, pan); },
+  wormPeek(pan) { blip([300, 420], 0.05, 0.04, 'square', pan); burst(0.25, 0.12, 800, 2, true, pan, 1600); },
+  wormLunge(pan) { cry(0.35, [300, 700, 250], 0.14, pan, { wob: 30, grit: 6 }); burst(0.25, 0.3, 1500, 1, true, pan, 400); },
+  voidBite() { blip([1800, 900], 0.015, 0.03, 'square', rr(-0.5, 0.5)); },
+  voidPop(pan) { blip([1200, 2400], 0.02, 0.04, 'square', pan); burst(0.08, 0.15, 4000, 2, false, pan); },
+  acidSpit(pan) { swoop(0.25, 500, 0.5, 'square', 1500, 0.06, pan); burst(0.15, 0.2, 2000, 2, true, pan, 500); },
+  acidHit(pan) { burst(0.4, 0.3, 900, 1.5, true, pan, 200); blip([200, 140], 0.04, 0.04, 'sawtooth', pan); },
+  rtEmerge(pan) { cry(1.0, [120, 260, 180], 0.22, pan, { wob: 8, wobAmt: 0.1, grit: 8, q: 1.2 }); burst(0.8, 0.3, 600, 0.7, true, pan, 3000); },
+  rtCharge(dur, pan) { swoop(dur, 180, 5, 'sawtooth', 2500, 0.05, pan); },
+  rtBeam(pan) { burst(0.7, 0.5, 1800, 0.5, true, pan, 300); swoop(0.6, 1600, 0.5, 'square', 4000, 0.08, pan); thump(0.6, 160, 40, 0.4); },
+  rtRam(pan) { cry(0.5, [200, 500, 150], 0.22, pan, { wob: 14, grit: 8 }); },
+  rtDive(pan) { swoop(0.6, 600, 0.2, 'sawtooth', 2000, 0.06, pan); burst(0.5, 0.25, 2000, 0.8, true, pan, 200); },
+};
+// (called every frame by musicTick: the looping sounds go quiet when you're not playing in the galaxy)
+function galaxyAudioTick() {
+  if (S.mode === 'play' && world && world.suns) return;
+  if (AU.galWind || AU.galSun || AU.galHole) { GSFX.windSet(0); GSFX.sunSet(0); GSFX.holeSet(0); }
+}
+</script>
+<script>
 // V0ID3D — effects.js: screen effects: bloom glow, glitches, the grab, the corner corruption
 "use strict";
 
@@ -9019,6 +9833,7 @@ function gatherLights(camX, camY) {
   for (const n of world.nulls) if (n.burn < 1) addLight(n.x - camX, n.y - camY, n.r * 1.5 * (1 - n.burn), 0.3, 0.5, 0.4, 1);   // (a blue-purple glow)
   for (const m of world.mines || []) addLight(m.x - camX, m.y - camY, 50 + m.near * 30, 0.4 + m.near * 0.4, 0.5, 0.4, 1);
   for (const b of world.bashers || []) addLight(b.x - camX, b.y - camY, b.state === 'bash' ? 110 : 60, b.state === 'bash' ? 0.9 : 0.4, 0.5, 0.4, 1);
+  if (world.suns) galaxyLights(camX, camY);
   if (world.boss && !world.boss.dead && world.boss.state !== 'hidden') addLight(world.boss.x - camX, world.boss.y - camY, 200, 0.9 * (world.boss.appear ?? 1), 0.3, 0.85, 1);   // Fenix lights everything cyan
   for (const n of world.nodes || []) addLight(n.x - camX, n.y - camY, n.zap ? 160 : 70, n.zap ? 1 : 0.45, 0.25, 0.85, 1);   // Nodes: cyan
   for (const m of world.maws || []) addLight(m.x - camX, m.y - camY, m.bolt ? 220 : 90, m.bolt ? 1.2 : 0.5, ...(m.state === 'dying' ? [1, 0.05, 0.05] : [0.5, 0.4, 1]));
@@ -9872,13 +10687,21 @@ const REALITIES = [
       allPodiumsSeen: true,                                  // arrows point to EVERY podium from the start
       blobs: { count: 5, r: [80, 120], parts: [1, 2] },
       beamers: { single: 2, dual: 1, triple: 0 },
+      mawWide: 2.6,                                          // the Thundermaws' lightning is MUCH wider here
       enemies: { mines: [8, 12], bashers: 2, maws: 7, nodes: 12 } },  // LOTS of Thundermaws + the new NODES (nodes.js)
     { name: 'FENIX', open: true, shards: 6, icon: 'fenix', mapScale: 0.62, music: 'stormbird', boss: 'fenix',   // THE FIRST BOSS (fenix.js): a round arena, no podiums
       rifts: false, tears: false, locators: false, portal: false, farRifts: false, farLightning: false,
       podiums: true, front: false, blobs: { count: 0, r: [1, 1], parts: [1, 1] } },
   ] },
-  { name: '???', open: true, sectors: [                     // REALITY 2: opens when you beat FENIX (its sectors aren't made yet)
-    { name: '???', open: false }, { name: '???', open: false }, { name: '???', open: false }, { name: '???', open: false }, { name: '???', open: false },
+  { name: 'GALAXY', open: true, sectors: [                  // REALITY 2: opens when you beat FENIX — space! (galaxy.js)
+    { name: 'SUNRIVERS', open: true, shards: 8, icon: 'sunrivers',   // (a normal-sized map)
+      rifts: false, tears: false, locators: false, portal: false, farRifts: false, farLightning: false,
+      podiums: true, front: true, windEdge: true,            // (the border only pushes you back with WIND — no damage)
+      galaxy: { holes: [1, 2], solids: [6, 8], rivers: [2, 3], clumps: 1 },   // black holes, planets (2 MASSIVE), rivers of suns + clumps
+      galaxyLife: { worms: 16, walkers: 12, swarms: [6, 9], swarmSize: [5, 25], travelers: 1 },   // LOTS of them   // Craterworms, Stonewalkers, Voidling swarms, (rare) Rifttravelers
+      blobs: { count: 5, r: [80, 120], parts: [1, 2] },
+      enemies: { mines: 0, bashers: 0, maws: 0 } },
+    { name: '???', open: false }, { name: '???', open: false }, { name: '???', open: false }, { name: '???', open: false },
   ] },
   { name: '???', open: false },
   { name: '???', open: false },
@@ -10125,6 +10948,39 @@ function sectorIconLightning(cx, cy, sel) {
   const a = S.t * 3; g.beginPath(); g.moveTo(cx + 14, cy - 10); g.lineTo(cx + 14 + Math.cos(a) * 4, cy - 10 + Math.sin(a) * 4); g.stroke();   // the clock hand
   diamond(cx + 16, cy + 8, 3, sel ? '#ff0000' : '#fff');
 }
+// each REALITY's picture, showing what's in it:
+//  OUTSKIRTS  a podium with its blue shard held down by lightning, a blob of Purification behind it
+//  GALAXY     a ringed planet, a little sun, twinkling stars
+function realityIcon(R, cx, cy, sel) {
+  const T = S.t;
+  if (R.name === 'GALAXY') {
+    for (let k = 0; k < 9; k++) { const x = cx - 26 + hash2(k, 1, 2601) * 52, y = cy - 18 + hash2(k, 2, 2601) * 36; g.globalAlpha = 0.4 + 0.6 * Math.abs(Math.sin(T * (1 + k * 0.3) + k)); g.fillStyle = k % 3 ? '#fff' : '#a0b8ff'; g.fillRect(Math.round(x), Math.round(y), 1, 1); }
+    g.globalAlpha = 1;
+    glowAt(cx + 16, cy - 10, 16, 16, 0.7, GLOW_SUN); g.fillStyle = '#ff8a10'; g.beginPath(); g.arc(cx + 16, cy - 10, 5, 0, 6.2832); g.fill(); g.fillStyle = '#fff0c0'; g.fillRect(cx + 15, cy - 11, 2, 2);   // the sun
+    glowAt(cx - 4, cy + 4, 24, 24, 0.25, GLOW_BLUE);
+    const ra = -0.35, ring = (front) => { g.strokeStyle = sel ? '#fff' : '#b48cff'; g.lineWidth = 1; g.beginPath(); g.ellipse(cx - 4, cy + 4, 20, 6, ra, front ? 0 : Math.PI, front ? Math.PI : 6.2832); g.stroke(); };
+    ring(false);                                                          // the ring's far half (behind the planet)
+    g.fillStyle = '#22304a'; g.beginPath(); g.arc(cx - 4, cy + 4, 11, 0, 6.2832); g.fill();
+    g.fillStyle = '#3a5276'; g.beginPath(); g.arc(cx - 7, cy + 1, 7, 0, 6.2832); g.fill();          // its lit side
+    g.fillStyle = '#16203a'; g.fillRect(cx - 1, cy + 6, 3, 2); g.fillRect(cx - 9, cy + 7, 2, 2);    // craters
+    ring(true);                                                           // ...and the near half (in front)
+    return;
+  }
+  // OUTSKIRTS
+  glowAt(cx - 10, cy + 8, 26, 18, 0.45, PURE_GLOW);
+  g.fillStyle = '#1a1050'; g.beginPath(); g.ellipse(cx - 12, cy + 10, 16, 9, 0, 0, 6.2832); g.fill(); g.strokeStyle = '#6e5cff'; g.lineWidth = 1; g.stroke();   // a blob of Purification
+  const stars = [[-18, -12], [18, -14], [-20, 8], [20, 6]], fq = Math.floor(T * 10), bolts = [];
+  for (const [sx, sy] of stars) { if (hash2(sx, fq, 2602) < 0.75) bolts.push([boltPts(cx + sx, cy + sy, cx, cy - 6, sx * 7 + fq, 4, 2), 2600 + sx, true]); g.fillStyle = '#b48cff'; g.fillRect(cx + sx - 1, cy + sy - 1, 2, 2); }
+  if (bolts.length) drawBolts(bolts, 0, 0, TETHER_BOLTS, 0.8);              // lightning holding the shard down
+  g.fillStyle = '#16161c'; g.fillRect(cx - 7, cy + 2, 14, 6); g.fillStyle = sel ? '#fff' : '#5a5a64'; g.fillRect(cx - 7, cy + 2, 14, 1);   // the podium
+  glowAt(cx, cy - 6, 14, 14, 0.7, PURE_GLOW); diamond(cx, cy - 6 + Math.sin(T * 2) * 1.5, 6, '#6e96ff'); diamond(cx, cy - 6 + Math.sin(T * 2) * 1.5, 2.5, '#fff');   // the blue shard
+}
+// SUNRIVERS' picture: a winding river of little suns past a planet
+function sectorIconSunrivers(cx, cy, sel) {
+  for (let i = 0; i < 4; i++) { const x = cx - 22 + i * 13, y = cy + Math.sin(i * 1.4) * 7 - 4, r = 4 + (i % 2); glowAt(x, y, 14, 14, 0.6, GLOW_SUN); g.fillStyle = '#ff8a10'; g.beginPath(); g.arc(x, y, r, 0, 6.2832); g.fill(); g.fillStyle = '#fff0c0'; g.fillRect(x - 1, y - 1, 2, 2); }
+  g.fillStyle = '#30303e'; g.beginPath(); g.arc(cx + 14, cy + 12, 8, 0, 6.2832); g.fill(); g.strokeStyle = sel ? '#fff' : '#8c8ca0'; g.lineWidth = 1; g.stroke();
+  g.fillStyle = '#1a1a24'; g.fillRect(cx + 11, cy + 10, 3, 2);
+}
 // FENIX's picture: a lightning bird, wings spread
 function sectorIconFenix(cx, cy, sel) {
   glowAt(cx, cy, 34, 22, 0.5, GLOW_CYAN);
@@ -10160,13 +11016,14 @@ function drawMenu() {
     if (open) {
       // a little Anchor (reality) / a ring of dots (sector) as the picture
       const cx = x + c.w / 2, cy = y + 52;
-      if (reals) { glowAt(cx, cy, 22, 22, 0.5); diamond(cx, cy, 11, '#000'); diamond(cx, cy, 9, '#ff0000'); diamond(cx, cy, 4, '#fff'); }
+      if (reals) realityIcon(c.it, cx, cy, sel);
       else if (diffs) diffIcon(cx, cy, c.i, sel);
       else if (c.it.icon === 'podium') sectorIconPodium(cx, cy, sel);
       else if (c.it.icon === 'seas') sectorIconSeas(cx, cy, sel);
       else if (c.it.icon === 'danger') sectorIconDanger(cx, cy, sel);
       else if (c.it.icon === 'lightning') sectorIconLightning(cx, cy, sel);
       else if (c.it.icon === 'fenix') sectorIconFenix(cx, cy, sel);
+      else if (c.it.icon === 'sunrivers') sectorIconSunrivers(cx, cy, sel);
       else { glowAt(cx, cy, 26, 26, 0.35); g.fillStyle = '#ff0000'; dotSquare(cx, cy, 22, S.t * 0.6, 40, 1, 4, Math.floor(S.t * 6));
              g.fillStyle = '#fff'; dotSquare(cx, cy, 13, -S.t * 0.9, 16, 1); diamond(cx, cy, 4, '#fff'); }
       const nm = c.it.name, sc = textWidth(nm, 2) <= c.w - 10 ? 2 : 1;
@@ -10587,6 +11444,7 @@ function render() {
   drawNullification(camX, camY);                   // the Purification — UNDER everything else, so you can always see what's in it
   if (world.opt.podiums) drawBarrier(camX, camY);    // the map's REAL border (cyan force field) — over the Purification, so you always see it
   if (world.danger || world.slime) drawDanger(camX, camY);          // Dangerblobs + slime (danger.js)
+  if (world.suns) drawGalaxyBodies(camX, camY);                     // suns, planets, black holes, rifts (galaxy.js)
   if (S.spawn && S.spawn.t < SPAWN.burst) drawAnchorForming(camX, camY);
   else if (!world.anchorGone) {
     const [ax, ay] = world.boss ? anchorDrag() : [0, 0];
@@ -10610,6 +11468,7 @@ function render() {
   for (const f of flyers) drawShard(f.s, f.x - camX, f.y - camY, ART, k);
   drawBeamers(camX, camY);
   if (world.mines) { drawMines(camX, camY); drawBashers(camX, camY); drawMaws(camX, camY); drawNodes(camX, camY); }
+  if (world.suns) drawGalaxyLife(camX, camY);                       // Craterworms, Stonewalkers, Voidlings, Rifttravelers
   if (player && S.mode !== 'dead') {
     for (const s of player.carried) drawShard(s, s.cx - camX, s.cy - camY, ART, k, 0.6);
     if (S.mode === 'play' || S.mode === 'paused' || S.mode === 'clear' || S.mode === 'cracking' || S.mode === 'warping') { if ((!S.spawn || S.spawn.t >= SPAWN.emerge) && !S.hidePlayer) drawPlayer(camX, camY, k); }
@@ -10619,6 +11478,7 @@ function render() {
   drawBeams(camX, camY);                           // (on top of the darkness: you see them coming)
   if (world.maws) drawMawBolts(camX, camY);
   if (world.nodes) drawNodeBolts(camX, camY);
+  if (world.suns) drawGalaxyShots(camX, camY);                      // acid + the Rifttravelers' beams
   if (world.boss) { drawBossWorld(camX, camY, k); drawPlayerWeapons(camX, camY); }   // FENIX, its feathers + orbs, your sword (fenix.js)
   drawSpikes(camX, camY);
   drawSuck(camX, camY);                            // remains being sucked into The Anchor
