@@ -60,18 +60,19 @@ const CFG = {
   timeFillSpeed: 1.5,     // how fast gained time flows into the timer (bigger = faster; ~2 s for +10)
   // PURIFYING (sectors with podiums, like The Voidlands)
   shieldBlocks: 2,        // a corrupted shard can block this many beams, then it's purified again (blue)
-  breakTime: 2.4,         // how long you HOLD E to tear a purified shard off its podium
+  breakTime: 2.4,
+  tearHeal: 0.3,          // let go of E and the podium's lightning heals back this fast (0.3 = about 8 s from almost torn)         // how long you HOLD E to tear a purified shard off its podium
   podiumRange: 26,        // how close you must be to a podium (to tear its shard off, or put it back)
   shieldSlow: 0.55,       // you move at this speed while holding the shield up
   // THE CREEPING PURIFICATION (podium sectors)
   nullSpeed: 2.8,         // how fast it creeps in (pixels per second, on average). MEASURED (with its arms): doing nothing = it reaches The Anchor in ~6 min
   nullProtect: 160,       // a filled podium keeps it this far away (in its direction)
   nullFail: 90,           // it gets this close to The Anchor = you fail
-  podiumCorruptTime: 10,
+  podiumCorruptTime: 10,  // a corrupted shard has to sit on its podium this long (seconds) before the whole podium is corrupted
   tearAlert: 420,         // tearing a shard off its podium ALERTS every enemy this close (pixels)...
   alertHunt: 6,           // ...and Bashers come hunting you for this many seconds
-  anchorHeal: 0.5,        // standing near The Anchor heals you this much per second (1 HP every 2 s)
-  corruptHeal: 10,        // corrupting a shard at The Anchor heals you this much  // a corrupted shard has to sit on its podium this long (seconds) before the whole podium is corrupted
+  anchorHeal: 4,          // standing near The Anchor heals you this much per second
+  corruptHeal: 25,        // corrupting a shard at The Anchor heals you this much
   pureDamage: 1,          // standing IN the Purification hurts this much per second...
   pureSlip: 2.2,          // ...and it's SLIPPERY (how fast you speed up / slow down in it — normal ground is 12)
   borderWindRange: 170,   // this close to the map's border, a WIND starts pushing you back in...
@@ -88,6 +89,12 @@ const CFG = {
   // PURIFICATION MINES
   mineRange: 30,          // get this close and it goes off
   mineBlast: 70,          // its explosion purifies corrupted shards this close to it
+  deathVolume: 0.45,      // how loud the death sounds are (1 = full)
+  dangerDps: 25,          // standing in a DANGERBLOB (sector 3) hurts this much per second
+  darkCone: 30,           // a DARK Beamer fires a CONE: this wide (pixels, each side) at its far end
+  slimeSlow: 0.45,        // walking through a dark Basher's slime: this fraction of your speed
+  slimeLife: 2,           // ...and each blob of slime lasts this long (seconds)
+  mineShotBlast: 150,     // a mine SHOT by a Beamer blows up every enemy this close (bigger than a Beamer's reach, so the shooter goes too)
   mineDamage: 15,
   // BASHERS
   basherSight: 210,
@@ -95,8 +102,6 @@ const CFG = {
   basherKnock: 380,       // a Basher hitting you throws you this fast, the way it was going
   basherHit: 26,
   guardRange: 210,        // enemies GUARD a podium: they never wander further than this from it
-  aimLead: 0,             // Beamers aim where you WILL be this many seconds later (0 = right at you, no leading)
-  aimError: 0.13,         // every shot / bash / bolt is off by a random angle up to this (radians: 0.13 = about 7 degrees)
   anchorTouch: 34,        // an enemy that gets this close to The Anchor's middle EXPLODES          // a bash hits you if it passes this close (pixels) — a bit bigger than it looks, so near misses count
   spikeDamage: 3,         // each spike when one bursts on your shield
   // THUNDERMAWS
@@ -117,7 +122,7 @@ const CFG = {
 //  reloads into the new version. build-site.js stamps a real number in here
 //  for the website; 'dev' (your own copy) never checks.
 // =====================================================================
-const BUILD_ID = '20261011112346';
+const BUILD_ID = '20261011121504';
 // THE PUBLIC LOCK: true = the website/app won't start, it just says
 // "NO IVAR. NO." (your own 'dev' copy always plays). false = everyone can play.
 const PUBLIC_LOCKED = false;
@@ -919,10 +924,12 @@ function glassRemix(T, cause) {
   ticks(T.drop + 0.05, T.slow - 0.1, 10, 900, 2600, 0.06);
   ticks(T.drop + T.slow, T.ramp, 26, 3500, 10000);
   ticks(T.drop + T.slow + T.ramp, Math.max(0.05, T.lens - T.drop - T.slow - T.ramp), 14, 5000, 11000);
-  // --- THE LENS: one piece hits the camera ---
-  osc(T.lens, 0.18, 500, 60, 'sine', 0.9);
-  noise(T.lens, 0.06, 0.9, 7000, 3000, 0.6);
-  ticks(T.lens, 0.05, 14, 6000, 12000, 0.008);
+  // --- THE LENS: one piece hits the camera (not in the HP death: it has no lens crack) ---
+  if (T !== CRACK) {
+    osc(T.lens, 0.18, 500, 60, 'sine', 0.9);
+    noise(T.lens, 0.06, 0.9, 7000, 3000, 0.6);
+    ticks(T.lens, 0.05, 14, 6000, 12000, 0.008);
+  }
   // --- BLACK: the clip's last chord rings out ---
   piece(T.black + 0.1, 2.4, K ? K.duration - 2.4 : 0, { vol: 0.9 });
 }
@@ -974,6 +981,28 @@ const SFX = {
   // THE CRACK DEATH (your health ran out): the glass remix, short version
   // GLASS SHATTERING (delay = seconds from now): a sharp crack, a bright
   // crash of breaking glass, and dozens of shards tinkling as they scatter
+  // MORE DEATH: a deep impact, a rising swell sucking everything in until the
+  // glass bursts, a sub boom, glass whooshing past your ears (left and right),
+  // a shimmering "purified" chord as the light bursts out, and a low drone
+  // sinking into the black. (Timed to CRACK in glass.js.)
+  deathExtra() {
+    const ctx = AU.ctx; if (!ctx) return;
+    const t = ctx.currentTime, T = CRACK;
+    thump(0.9, 75, 28, 0.6);                                                          // the hit
+    noiseEnv(t, 'highpass', 250, 6000, T.drop, [[T.drop * 0.92, 0.2], [T.drop, 0.01]], 1.2);   // the swell, rising...
+    const sw = ctx.createOscillator(), sg = ctx.createGain();                          // ...with a tone rising under it
+    sw.type = 'sawtooth'; sw.frequency.setValueAtTime(45, t); sw.frequency.exponentialRampToValueAtTime(220, t + T.drop);
+    sg.gain.setValueAtTime(0.0001, t); sg.gain.exponentialRampToValueAtTime(0.07, t + T.drop * 0.9); sg.gain.exponentialRampToValueAtTime(0.0001, t + T.drop + 0.02);
+    const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 900;
+    sw.connect(lp).connect(sg).connect(AU.master); sw.start(t); sw.stop(t + T.drop + 0.05);
+    thump(1, 60, 22, 1.4, T.drop);                                                    // BOOM
+    for (let i = 0; i < 8; i++) burst(0.3, 0.16, rr(700, 1400), 2, false, i % 2 ? rr(0.4, 1) : rr(-1, -0.4), rr(4000, 8000), T.drop + 0.06 + i * rr(0.05, 0.12));   // glass whooshing past
+    for (const f of [523, 659, 784, 1046, 1318, 1568]) bell(f, 0.035, 2.4, rr(-0.6, 0.6), T.drop + 0.04 + rnd() * 0.08, 0.7);   // the purified chord
+    const dr = ctx.createOscillator(), dg = ctx.createGain(), t2 = t + T.lens - 0.3;      // the drone sinking into the black
+    dr.type = 'sine'; dr.frequency.setValueAtTime(90, t2); dr.frequency.exponentialRampToValueAtTime(38, t2 + 1.4);
+    dg.gain.setValueAtTime(0.0001, t2); dg.gain.exponentialRampToValueAtTime(0.25, t2 + 0.2); dg.gain.exponentialRampToValueAtTime(0.0001, t2 + 1.5);
+    dr.connect(dg).connect(AU.master); dr.start(t2); dr.stop(t2 + 1.6);
+  },
   glassShatter(delay = 0) {
     const ctx = AU.ctx; if (!ctx) return;
     const t = ctx.currentTime + delay;
@@ -1270,6 +1299,10 @@ const SFX = {
   crackle(k, pan) { burst(rr(0.01, 0.03), 0.12 + k * 0.25, rr(2500, 5000) + k * 4000, 3, true, pan); if (rnd() < 0.3 + k * 0.4) blip([rr(1500, 3000) + k * 2000], 0.012, 0.02 + k * 0.02, 'square', pan); },
   // a PURIFICATION MINE going off: a sharp crystal POP, a hollow sub thump,
   // a fizz of light and a little falling chime (nothing like the other booms)
+  // an enemy turns DARK: a low snarl sliding down + a hiss
+  darken(pan) { swoop(0.5, 220, 0.4, 'sawtooth', 700, 0.08, pan); burst(0.4, 0.1, 900, 1.5, true, pan, 300); },
+  // a dark enemy is "killed" and turns normal: a crack and a falling chime
+  undark(pan) { burst(0.15, 0.3, 2500, 1, false, pan, 600); thump(0.5, 150, 50, 0.3); bell(1568, 0.04, 0.8, pan); bell(1047, 0.04, 0.9, pan, 0.06); },
   mineBlast() {
     const ctx = AU.ctx; if (!ctx) return;
     thump(0.8, 160, 45, 0.5);
@@ -2202,14 +2235,33 @@ function addPodiums(w, R) {
     s.podium = p; s.state = 'onPodium'; s.pure = true; s.x = x; s.y = y - 14;
     w.podiums.push(p);
   }
-  // blobs of PURIFICATION scattered around — never on top of a podium
-  for (let k = 0, want = 6; k < 3000 && w.nulls.length < want; k++) {
-    const a = R() * 6.283, d = 420 + Math.sqrt(R()) * (edgeRadiusAt(w.edge, a) - 680), x = Math.cos(a) * d, y = Math.sin(a) * d, r = 70 + R() * 50;
-    if (w.podiums.some(p => Math.hypot(p.x - x, p.y - y) < r * 1.3 + 70)) continue;
-    if (w.nulls.some(n => Math.hypot(n.x - x, n.y - y) < n.r + r + 40)) continue;
-    const shape = [], N = 56, ph = [R() * 6.3, R() * 6.3, R() * 6.3];
-    for (let i = 0; i < N; i++) { const b = i / N * 6.2832; shape.push(1 + 0.16 * Math.sin(b * 2 + ph[0]) + 0.1 * Math.sin(b * 3 + ph[1]) + 0.06 * Math.sin(b * 5 + ph[2])); }
-    w.nulls.push({ x, y, r, shape, ph: R() * 6, burn: 0, podium: null, id: w.nulls.length });
+  // blobs of PURIFICATION scattered around — never on top of a podium, and
+  // never on The Anchor. A sector can ask for SEAS (opt.blobs): bigger, and
+  // each one several lumpy blobs melted together (they're drawn as one shape)
+  const B = w.opt.blobs || { count: 6, r: [70, 120], parts: [1, 1] }, lumpy = B.parts[1] > 1;
+  const blobShape = () => {
+    const shape = [], N = 56, ph = [R() * 6.3, R() * 6.3, R() * 6.3, R() * 6.3], A = lumpy ? [0.26, 0.17, 0.1, 0.06] : [0.16, 0.1, 0.06, 0];
+    for (let i = 0; i < N; i++) { const b = i / N * 6.2832; shape.push(Math.max(0.5, 1 + A[0] * Math.sin(b * 2 + ph[0]) + A[1] * Math.sin(b * 3 + ph[1]) + A[2] * Math.sin(b * 5 + ph[2]) + A[3] * Math.sin(b * 7 + ph[3]))); }
+    return shape;
+  };
+  const okPart = (x, y, r) => Math.hypot(x, y) - r * 1.35 > CFG.beamerSafe + 20 &&                 // (keeps away from The Anchor)
+    Math.hypot(x, y) + r * 1.35 < edgeRadiusAt(w.edge, Math.atan2(y, x)) - 60 &&
+    !w.podiums.some(p => Math.hypot(p.x - x, p.y - y) < r * 1.35 + 70);
+  for (let k = 0, seas = 0; k < 3000 && seas < B.count; k++) {
+    const a = R() * 6.283, r = B.r[0] + R() * (B.r[1] - B.r[0]), d = 420 + Math.sqrt(R()) * (edgeRadiusAt(w.edge, a) - 680), x = Math.cos(a) * d, y = Math.sin(a) * d;
+    if (!okPart(x, y, r)) continue;
+    if (w.nulls.some(n => Math.hypot(n.x - x, n.y - y) < n.r + r * (lumpy ? 1.9 : 1) + 40)) continue;
+    const sea = seas++;
+    w.nulls.push({ x, y, r, shape: blobShape(), ph: R() * 6, burn: 0, podium: null, id: w.nulls.length, sea });
+    const parts = B.parts[0] + Math.floor(R() * (B.parts[1] - B.parts[0] + 1));
+    for (let j = 1; j < parts; j++) {                       // the extra lumps, overlapping the main blob
+      for (let tries = 0; tries < 30; tries++) {
+        const pa = R() * 6.283, pd = r * (0.55 + R() * 0.35), pr = r * (0.45 + R() * 0.3), px = x + Math.cos(pa) * pd, py = y + Math.sin(pa) * pd;
+        if (!okPart(px, py, pr)) continue;
+        w.nulls.push({ x: px, y: py, r: pr, shape: blobShape(), ph: R() * 6, burn: 0, podium: null, id: w.nulls.length, sea });
+        break;
+      }
+    }
   }
 }
 // BEAMERS: spread over the map, never near The Anchor
@@ -2230,7 +2282,7 @@ function addBeamers(w, R, B) {
 // opt = what this sector's map has in it (see REALITIES in menus.js): rifts, tears or locators set to false are left out
 function genWorld(n, seed, portal = 0, opt = {}) {
   const R = mulberry32(seed);
-  const radius = CFG.baseRadius * Math.pow(n / 11, CFG.mapGrowth);
+  const radius = CFG.baseRadius * Math.pow(n / 11, CFG.mapGrowth) * (opt.mapScale || 1);   // (a sector can ask for a bigger map)
   const area = Math.PI * radius * radius;
   const w = { seed, radius, shards: [], blobs: [], tears: [], anchorSq: [], anchorDia: [],
               anchorPulse: 0, delivered: 0, total: n, opt, podiums: [], nulls: [], beamers: [], mines: [], bashers: [], maws: [], anchorHalves: [] };
@@ -2311,6 +2363,7 @@ function genWorld(n, seed, portal = 0, opt = {}) {
     w.locators.push({ x, y, state: 'idle', t: 0, id: w.locators.length, target: null });
   }
   if (opt.podiums) addPodiums(w, R);
+  if (opt.dangerBlobs) addDangerBlobs(w, R, opt.dangerBlobs);   // (danger.js)
   if (opt.front) w.front = makeFront(w);
   if (opt.beamers) addBeamers(w, R, opt.beamers);
   if (opt.enemies) addEnemies(w, R, opt.enemies);
@@ -2338,7 +2391,7 @@ function startArea(area, n) {
     s.state = 'carried'; s.cx = player.x; s.cy = player.y; player.carried.push(s);
   }
   cam.x = player.x; cam.y = player.y;
-  particles = []; flyers = []; pops = []; FX.list = []; SPIKES.list = [];
+  particles = []; flyers = []; pops = []; FX.list = []; SPIKES.list = []; SUCK.list = [];
   if (world.front) purePattern();                 // (build the Purification's texture NOW, while loading — not mid-game when the wall first shows up)
   S.banner = 0;                                   // (the sector's name slides in at the top AFTER the arrival)
   S.hudSeen = {}; S.heldK = 0; S.heldShow = null;  // (the HUD slides in fresh)
@@ -2409,7 +2462,12 @@ function crackDie(cause) {
   if (world && world.won) return;
   S.mode = 'cracking'; S.crackT = 0; S.deathCause = cause; S.shatter = null; S.shake = 8;
   S.soft = !!S.sector;
-  SFX.crackDeath(cause); SFX.glassShatter(CRACK.drop);
+  // (all the death sounds go through one volume knob: for a moment AU.master points at a
+  //  quieter "death bus", so every sound made right now plugs into that instead)
+  const main = AU.master;
+  if (AU.ctx) { if (!AU.deathBus) { AU.deathBus = AU.ctx.createGain(); AU.deathBus.connect(main); } AU.deathBus.gain.value = CFG.deathVolume; AU.master = AU.deathBus; }
+  try { SFX.crackDeath(cause); SFX.glassShatter(CRACK.drop); SFX.deathExtra(); } finally { AU.master = main; }
+  S.crackClock = AU.ctx && AU.ctx.state === 'running' ? AU.ctx.currentTime : null;   // (the animation follows the sound's own clock — see update.js)
 }
 // =====================================================================
 //  THE ARRIVAL (the start of every sector): the world is empty... red
@@ -2459,7 +2517,7 @@ function drawAnchorForming(camX, camY) {
 // back to the very start of the sector you died in (fading in from black)
 function restartSector() { S.soft = false; S.shatter = null; startSector(S.sector); S.fadeIn = 1; }
 // the soft death is over: the TRY AGAIN / QUIT screen (glass.js)
-function toSoftDead() { S.mode = 'softdead'; S.deadT = 0; S.askSel = -1; S.deadLens = S.shatter && S.shatter.lens; S.shatter = null; }
+function toSoftDead() { S.mode = 'softdead'; S.deadT = 0; S.askSel = -1; S.shatter = null; }
 // what the death menu says for each way of dying
 const DEATH_TEXT = {
   time:   ['REALITY COLLAPSED', 'TIME RAN OUT'],
@@ -2468,6 +2526,7 @@ const DEATH_TEXT = {
   nullified: ['PURIFIED', 'THE PURIFICATION REACHED THE ANCHOR'],
   purified: ['PURIFIED', 'DISSOLVED IN THE PURIFICATION'],
   border:   ['THROWN BACK', 'KILLED BY THE BORDER'],
+  danger:   ['DISSOLVED', 'KILLED BY A DANGERBLOB'],
   mine:   ['PURIFIED', 'KILLED BY A PURIFICATION MINE'],
   basher: ['CRUSHED', 'KILLED BY A BASHER'],
   spike:  ['SHREDDED', 'KILLED BY BASHER SPIKES'],
@@ -2763,7 +2822,12 @@ function update(dt) {
       if (!document.hasFocus()) S.mode = 'paused';   // (you clicked away during the cutscene: don't start the clock without you)
     }
   }
-  else if (S.mode === 'cracking') { S.crackT += dt; if (S.crackT > CRACK.end) { if (S.soft) toSoftDead(); else S.mode = 'dead'; } }
+  else if (S.mode === 'cracking') {
+    // the death's time = how long the SOUND has been playing (a slow frame — like the
+    // first one, where the glass is built — can't make the picture fall behind it)
+    S.crackT = S.crackClock != null && AU.ctx && AU.ctx.state === 'running' ? AU.ctx.currentTime - S.crackClock : S.crackT + dt;
+    if (S.crackT > CRACK.end) { if (S.soft) toSoftDead(); else S.mode = 'dead'; }
+  }
   else if (S.mode === 'softdead') S.deadT = (S.deadT || 0) + dt;
   else if (S.mode === 'warping' || S.mode === 'beyond') {
     const bt0 = S.warpT - WARP.end;                    // (seconds the dot has been showing)
@@ -2872,7 +2936,8 @@ function updatePlay(dt, k) {
   if (keys.s || keys.arrowdown) iy++;
   const il = Math.hypot(ix, iy) || 1;
   if (ix || iy) { player.fx = ix / il; player.fy = iy / il; }   // remember which way you're facing
-  const slow = (1 - S.pure * 0.65) * (S.shield ? CFG.shieldSlow : 1);   // near The Portal you get slower and slower... (and with your shield up)
+  const slimed = world.slime && inSlime(player.x, player.y);   // (a dark Basher's slime: danger.js)
+  const slow = (1 - S.pure * 0.65) * (S.shield ? CFG.shieldSlow : 1) * (slimed ? CFG.slimeSlow : 1);   // near The Portal you get slower and slower... (and with your shield up)
   const tvx = ix / il * CFG.playerSpeed * slow, tvy = iy / il * CFG.playerSpeed * slow;
   // IN THE PURIFICATION it's slippery: you speed up and slow down much more slowly (like on ice)
   const inPure = world.opt.podiums && !!insideNull(player.x, player.y);
@@ -2935,6 +3000,9 @@ function updatePlay(dt, k) {
   // standing in the Purification eats you away: 1 HP a second
   if (inPure) { S.pureTouch = (S.pureTouch || 0) + CFG.pureDamage * dt; while (S.pureTouch >= 1) { S.pureTouch -= 1; hurt(1, 'purified', true); if (S.mode !== 'play') return; } }
   else S.pureTouch = Math.max(0, (S.pureTouch || 0) - dt);
+  // in a DANGERBLOB: CFG.dangerDps a second (in bites of 5)
+  if (world.danger && insideDanger(player.x, player.y)) { S.dangerTouch = (S.dangerTouch || 0) + CFG.dangerDps * dt; while (S.dangerTouch >= 5) { S.dangerTouch -= 5; hurt(5, 'danger', true); if (S.mode !== 'play') return; } }
+  else S.dangerTouch = 0;
   S.hurtT = Math.max(0, S.hurtT - dt);
   updateLocators(dt);
   // --- edge of the world ---
@@ -2949,7 +3017,7 @@ function updatePlay(dt, k) {
       player.x -= ux * push * dt; player.y -= uy * push * dt;
       if (rnd() < dt * 90 * wk) {                            // streaks of wind flying past you, back into the map
         const sa = Math.atan2(uy, ux) + rr(-0.9, 0.9), sd = lim + rr(-30, 10);
-        particles.push({ x: Math.cos(sa) * sd, y: Math.sin(sa) * sd, vx: -ux * rr(160, 300), vy: -uy * rr(160, 300), life: 0.5, max: 0.5, col: rnd() < 0.6 ? '#8a6cff' : '#fff', s: 1, streak: true });
+        particles.push({ x: Math.cos(sa) * sd, y: Math.sin(sa) * sd, vx: -ux * rr(160, 300), vy: -uy * rr(160, 300), life: 0.5, max: 0.5, col: rnd() < 0.6 ? '#2fd0ff' : '#fff', s: 1, streak: true });
       }
     }
     // TOUCH IT: it throws you back in (and hurts)
@@ -5226,7 +5294,7 @@ function updatePurify(dt) {
   for (const p of world.podiums) {
     if (p.state !== 'pure') continue;
     const before = p.breakT || 0;
-    p.breakT = p === tp ? before + dt : Math.max(0, before - dt * 1.5);      // (let go and it slowly heals)
+    p.breakT = p === tp ? before + dt : Math.max(0, before - dt * CFG.tearHeal);      // (let go and it SLOWLY heals)
     const n = p.tethers.length, k = p.breakT / CFG.breakTime, pan = clamp((p.x - player.x) / 200, -1, 1);
     if (p === tp) {
       // STRAINING: crackling that gets faster and higher, the screen shaking,
@@ -5322,7 +5390,7 @@ function updatePurify(dt) {
   for (const n of world.nulls) if (!n.drop && n.burn < 1 && (n.burn > 0 || world.podiums.some(p => p.filled && Math.hypot(p.x - n.x, p.y - n.y) < n.r + CFG.nullProtect + 60))) n.burn = Math.min(1, n.burn + dt / 3);
   // every podium corrupted: the pieces fly to The Anchor and the ending plays
   // (won is a true/false flag — the TIME it happened could be 0, and 0 counts as 'false' in JavaScript)
-  if (!world.won && !S.tutorial && world.podiums.length && world.podiums.every(p => p.filled)) { world.won = true; world.doneT = S.t; }
+  if (!world.won && !S.tutorial && world.podiums.length && world.podiums.every(p => p.filled)) { world.won = true; world.doneT = S.t; if (S.sector) markBeaten(S.sector.name); }   // (saved: the next sector unlocks)
   if (world.won && S.t - world.doneT > 1.5) startFinale();
 }
 
@@ -5333,7 +5401,7 @@ function updatePurify(dt) {
 //   boom   a giant red explosion... and a WAVE of corruption sweeps out over
 //          the whole screen, red cracks racing out behind it. Every enemy it
 //          touches explodes; the Purification burns away; the wall pulls back
-//   text   REALITY CORRUPTED
+//   text   SECTOR CORRUPTED
 // =====================================================================
 const FIN = { beams: 0.4, boom: 3.4, done: 3.4, text: 4.6, enter: 5.4, end: 12 };
 const clearTL = () => world && world.opt.podiums ? FIN : CLEAR;   // (which ending's timing is running)
@@ -5579,13 +5647,13 @@ const nullC = document.createElement('canvas'), ncx = nullC.getContext('2d');
 let PURE_PAT = null, PURE_PAT_C = null;
 function purePattern() {
   if (PURE_PAT) return PURE_PAT;
-  const c = makeCanvas(256, 256), x = c.getContext('2d'), im = x.createImageData(256, 256);
+  const T = 512, c = makeCanvas(T, T), x = c.getContext('2d'), im = x.createImageData(T, T);   // (512: big enough that huge seas don't show it repeating)
   const pal = [[18, 12, 58], [30, 22, 96], [44, 36, 136], [66, 52, 180], [100, 80, 230]];
-  for (let y = 0; y < 256; y++) for (let xx = 0; xx < 256; xx++) {
-    const v = tileNoise(xx, y, 64, 801) * 0.55 + tileNoise(xx, y, 32, 802) * 0.3 + tileNoise(xx, y, 16, 803) * 0.15;
+  for (let y = 0; y < T; y++) for (let xx = 0; xx < T; xx++) {
+    const v = tileNoise(xx, y, 128, 800, T) * 0.3 + tileNoise(xx, y, 64, 801, T) * 0.38 + tileNoise(xx, y, 32, 802, T) * 0.21 + tileNoise(xx, y, 16, 803, T) * 0.11;
     let col = pal[Math.min(4, Math.max(0, Math.floor((v - 0.2) * 7)))];
     if (hash2(xx, y, 804) < 0.004) col = [180, 140, 255];
-    const i = (y * 256 + xx) * 4; im.data[i] = col[0]; im.data[i + 1] = col[1]; im.data[i + 2] = col[2]; im.data[i + 3] = 255;
+    const i = (y * T + xx) * 4; im.data[i] = col[0]; im.data[i + 1] = col[1]; im.data[i + 2] = col[2]; im.data[i + 3] = 255;
   }
   x.putImageData(im, 0, 0);
   PURE_PAT_C = c;
@@ -5673,10 +5741,22 @@ function tiledFill(ctx, tile, ox, oy, B) {
 // also there r pixels left, right, up and down of it
 // (B = the box on screen where there IS Purification — everything outside it is skipped)
 const cpBox = (ctx, src, B, dx = 0, dy = 0) => ctx.drawImage(src, B.x, B.y, B.w, B.h, B.x + dx, B.y + dy, B.w, B.h);
+// (it reads from padC: the mask with its outermost pixels STRETCHED outward by PAD,
+// so what's just off-screen counts as "the same as the edge" — otherwise a blob
+// that fills the whole screen would get a fake bright rim along the screen's edge)
+const padC = document.createElement('canvas'), PAD = 16;
+function padMask() {
+  if (padC.width !== W + PAD * 2 || padC.height !== H + PAD * 2) { padC.width = W + PAD * 2; padC.height = H + PAD * 2; }
+  const p = padC.getContext('2d'); p.imageSmoothingEnabled = false; p.clearRect(0, 0, padC.width, padC.height);
+  p.drawImage(maskC, PAD, PAD);
+  p.drawImage(maskC, 0, 0, 1, H, 0, PAD, PAD, H); p.drawImage(maskC, W - 1, 0, 1, H, W + PAD, PAD, PAD, H);            // left / right edge, stretched
+  p.drawImage(padC, 0, PAD, W + PAD * 2, 1, 0, 0, W + PAD * 2, PAD); p.drawImage(padC, 0, PAD + H - 1, W + PAD * 2, 1, 0, PAD + H, W + PAD * 2, PAD);   // top / bottom
+}
+const cpPad = (ctx, B, dx, dy) => ctx.drawImage(padC, B.x + PAD - dx, B.y + PAD - dy, B.w, B.h, B.x, B.y, B.w, B.h);   // = the mask moved by (dx, dy)
 function erodeMask(ctx, r, B) {
-  ctx.globalCompositeOperation = 'source-over'; ctx.clearRect(B.x, B.y, B.w, B.h); cpBox(ctx, maskC, B, r, 0);
+  ctx.globalCompositeOperation = 'source-over'; ctx.clearRect(B.x, B.y, B.w, B.h); cpPad(ctx, B, r, 0);
   ctx.globalCompositeOperation = 'destination-in';
-  cpBox(ctx, maskC, B, -r, 0); cpBox(ctx, maskC, B, 0, r); cpBox(ctx, maskC, B, 0, -r);
+  cpPad(ctx, B, -r, 0); cpPad(ctx, B, 0, r); cpPad(ctx, B, 0, -r);
   ctx.globalCompositeOperation = 'source-over';
 }
 // the box around everything Purification on screen: the blobs, and (for the
@@ -5704,6 +5784,7 @@ function drawNullification(camX, camY) {
   if (!vis.length && !front) return;
   const B = pureBox(vis, front, camX, camY);
   if (!B) return;
+  padMask();
   // 1) THE GLOW (two sizes: a tight one and a wide one)
   for (const [c, cx, d, a] of [[glowS1, gs1, 6, 0.55], [glowS2, gs2, 18, 0.5]]) {
     const sw = Math.ceil(W / d), sh = Math.ceil(H / d);
@@ -5756,11 +5837,11 @@ function drawNullification(camX, camY) {
 }
 
 // =====================================================================
-//  THE BARRIER — the map's border in podium sectors. The Purification comes
-//  from out there, so its border is THEIRS: a wall of blue-violet energy.
-//   - outside it: a dark violet nothing, with slow stripes of light
-//   - the wall: a glowing line with white dashes running along it
-//   - PYLONS along it (little crystals), with lightning jumping between them
+//  THE BARRIER — the map's REAL border in podium sectors (the one that throws
+//  you back). It looks nothing like the Purification's wall: a CYAN force field.
+//   - outside it: a dark grid of cyan diamonds, with a band of light sweeping over it
+//   - the wall: a glowing cyan line with white dashes racing along it
+//   - PYLONS along it (little cyan crystals), with cyan lightning jumping between them
 //     (more of it the closer you are — the wind gets stronger too)
 //   - touch it and it throws you back: a ripple spreads where you hit it
 // =====================================================================
@@ -5769,20 +5850,25 @@ function drawBarrier(camX, camY) {
   const far = Math.max(Math.hypot(camX, camY), Math.hypot(camX + W, camY), Math.hypot(camX, camY + H), Math.hypot(camX + W, camY + H));
   if (far < e.min - 140) return;                           // (not on screen)
   const near = S.windK || 0, trace = () => { g.beginPath(); e.pts.forEach(([x, y], i) => i ? g.lineTo(x + ox, y + oy) : g.moveTo(x + ox, y + oy)); g.closePath(); };
-  // 1) OUTSIDE: dark violet, with diagonal stripes of light drifting along (stuck to the world)
+  // 1) OUTSIDE: a dark FORCE FIELD — a grid of cyan diamonds (stuck to the world), with a band of light sweeping across it
   g.save(); g.beginPath(); g.rect(0, 0, W, H); e.pts.forEach(([x, y], i) => i ? g.lineTo(x + ox, y + oy) : g.moveTo(x + ox, y + oy)); g.closePath(); g.clip('evenodd');
-  g.fillStyle = '#07041a'; g.fillRect(0, 0, W, H);
-  const base = (((camX - camY) % 24) + 24) % 24, off = (T * 10) % 24;
-  g.strokeStyle = '#140c3a'; g.lineWidth = 4; g.beginPath();
-  for (let k = -H - 24; k < W + 24; k += 24) { const x = k - base + off; g.moveTo(x, 0); g.lineTo(x + H, H); }
-  g.stroke(); g.restore();
-  // 2) the glow, 3) the wall: a violet line with white dashes running along it
-  glowLine(e.pts, ox, oy, 60, 0.12 + 0.04 * Math.sin(T * 2) + near * 0.2, '#5b3cff');
+  g.fillStyle = '#01080c'; g.fillRect(0, 0, W, H);
+  const sz = 16, bx = ((camX - camY) % sz + sz) % sz, by = ((camX + camY) % sz + sz) % sz;
+  g.strokeStyle = '#0b3440'; g.lineWidth = 1; g.beginPath();
+  for (let k = -H - sz; k < W + sz; k += sz) { g.moveTo(k - bx, 0); g.lineTo(k - bx + H, H); g.moveTo(k + by, H); g.lineTo(k + by + H, 0); }
+  g.stroke();
+  const sweep = ((T * 120) % (W + H + 400)) - 200;
+  g.globalCompositeOperation = 'lighter'; g.globalAlpha = 0.35; g.strokeStyle = '#2fd0ff'; g.lineWidth = 1; g.beginPath();
+  for (let k = -H - sz; k < W + sz; k += sz) { const x = k - bx; if (Math.abs(x + H / 2 - sweep) < 60) { g.moveTo(x, 0); g.lineTo(x + H, H); } }
+  g.stroke(); g.globalAlpha = 1; g.globalCompositeOperation = 'source-over';
+  g.restore();
+  // 2) the glow, 3) the wall: a CYAN energy line with white dashes racing along it
+  glowLine(e.pts, ox, oy, 60, 0.14 + 0.05 * Math.sin(T * 3) + near * 0.3, '#2fd0ff');
   trace(); g.lineJoin = 'round';
-  g.strokeStyle = '#5b3cff'; g.lineWidth = 4; g.stroke();
-  g.strokeStyle = '#b48cff'; g.lineWidth = 2; g.stroke();
-  g.setLineDash([3, 9]); g.lineDashOffset = -T * 30; g.strokeStyle = '#fff'; g.lineWidth = 1; g.stroke(); g.setLineDash([]);
-  // 4) PYLONS + the lightning jumping between them
+  g.strokeStyle = '#0a5a70'; g.lineWidth = 5; g.stroke();
+  g.strokeStyle = '#5ff0ff'; g.lineWidth = 2; g.stroke();
+  g.setLineDash([2, 6]); g.lineDashOffset = -T * 50; g.strokeStyle = '#fff'; g.lineWidth = 1; g.stroke(); g.setLineDash([]);
+  // 4) PYLONS (little cyan crystals) with cyan lightning jumping between them
   const step = 12, fq = Math.floor(T * 10), bolts = [];
   for (let i = 0; i < e.N; i += step) {
     const [px, py] = e.pts[i], x = px + ox, y = py + oy;
@@ -5790,17 +5876,17 @@ function drawBarrier(camX, camY) {
     const [qx, qy] = e.pts[(i + step) % e.N];
     if (hash2(i, fq, 991) < 0.2 + near * 0.6) bolts.push([boltPts(x, y, qx + ox, qy + oy, i, 6, 5), 2100 + i, true]);
     if (x < -10 || x > W + 10 || y < -10 || y > H + 10) continue;
-    glowAt(x, y, 10, 10, 0.7, PURE_GLOW);
-    diamond(Math.round(x), Math.round(y), 4, '#100c30'); diamond(Math.round(x), Math.round(y), 3, '#8a6cff');
-    diamond(Math.round(x), Math.round(y), 1.5, Math.floor(T * 3 + i) % 4 ? '#e0d4ff' : '#fff');
+    glowAt(x, y, 10, 10, 0.7, GLOW_CYAN);
+    diamond(Math.round(x), Math.round(y), 4, '#022028'); diamond(Math.round(x), Math.round(y), 3, '#2fd0ff');
+    diamond(Math.round(x), Math.round(y), 1.5, Math.floor(T * 3 + i) % 4 ? '#c8faff' : '#fff');
   }
-  if (bolts.length) drawBolts(bolts, 0, 0, TETHER_BOLTS, 0.85);
+  if (bolts.length) drawBolts(bolts, 0, 0, CYAN_BOLTS, 0.85);
   // 5) the RIPPLE where you were thrown back
   const hit = S.barrierHit, u = hit ? (T - hit.t) / 0.9 : 1;
   if (u < 1) {
-    for (const [r, col] of [[8 + u * 70, '#fff'], [4 + u * 45, '#8a6cff']]) {
+    for (const [r, col] of [[8 + u * 70, '#fff'], [4 + u * 45, '#2fd0ff']]) {
       g.globalAlpha = 1 - u; g.fillStyle = col;
-      for (let i = 0; i < 40; i++) { const a = i / 40 * 6.2832; g.fillRect(Math.round(hit.x + ox + Math.cos(a) * r), Math.round(hit.y + oy + Math.sin(a) * r), 2, 2); }
+      for (let i = 0; i < 40; i++) { const a2 = i / 40 * 6.2832; g.fillRect(Math.round(hit.x + ox + Math.cos(a2) * r), Math.round(hit.y + oy + Math.sin(a2) * r), 2, 2); }
     }
     g.globalAlpha = 1;
   }
@@ -5989,6 +6075,22 @@ function drawPurifyHUD(k, late) {
     const dx = sx - W / 2, dy = sy - H / 2, f = Math.min((W / 2 - 16) / Math.abs(dx || 1e-6), (H / 2 - 16) / Math.abs(dy || 1e-6));
     draw(Math.round(W / 2 + dx * f), Math.round(H / 2 + dy * f), Math.atan2(dy, dx));
   };
+  // PODIUM POINTERS: every podium you've SEEN (it was on your screen) gets an
+  // arrow at the screen edge until it's corrupted — blue = still has its
+  // shard, flashing red = you're carrying its shard, red = corrupting
+  for (const p of world.podiums) {
+    const sx = p.x - cam.x + W / 2, sy = p.y - cam.y + H / 2;
+    if (!p.seen && sx > 0 && sx < W && sy > 0 && sy < H) p.seen = true;
+    if (!p.seen || p.state === 'corrupt' || (S.tutorial && TUT)) continue;
+    const mine = s && s.podium === p;
+    edgeArrow(p.x, p.y - 14, (x, y, a) => {
+      const c = Math.cos(a), sn = Math.sin(a), col = p.state === 'corrupting' ? '#ff0000' : mine ? (Math.floor(S.t * 4) % 2 ? '#ff0000' : '#fff') : '#8a6cff';
+      glowAt(x, y, 9, 9, 0.5, p.state === 'pure' && !mine ? PURE_GLOW : GLOW);
+      g.fillStyle = col;
+      for (let i = 0; i < 6; i++) for (let w2 = -i; w2 <= i; w2++) if (Math.abs(w2) === i || i === 5) g.fillRect(Math.round(x + c * (2 - i) - sn * w2 * 0.8), Math.round(y + sn * (2 - i) + c * w2 * 0.8), 1, 1);   // an arrowhead
+      g.fillRect(Math.round(x - c * 7) - 1, Math.round(y - sn * 7) - 1, 3, 2);                                    // a little podium block behind it
+    });
+  }
   edgeArrow(0, 0, (x, y) => { glowAt(x, y, 10, 10, 0.5); diamond(x, y, 4 + Math.sin(S.t * 5) * 0.8, '#ff0000'); diamond(x, y, 1.5, '#fff'); });
   const hunting = [...world.beamers.filter(b => !b.dead && (b.state === 'chase' || b.state === 'charge' || b.state === 'fire')),
     ...world.bashers.filter(b => b.state === 'windup' || b.state === 'bash'), ...world.maws.filter(m => m.state === 'track' || m.state === 'open' || m.state === 'zap')];
@@ -6235,9 +6337,8 @@ function updateBeamers(dt) {
   const safeP = Math.hypot(player.x, player.y) < CFG.beamerSafe - 30;   // you're in The Anchor's light
   for (const b of world.beamers) {
     if (b.dead) { b.deadT += dt; continue; }
+    darkTick(b, dt);
     const K = BEAMER_KIND[b.kind], dx = player.x - b.x, dy = player.y - b.y, d = Math.hypot(dx, dy), toP = Math.atan2(dy, dx);
-    // BETTER AIM: it aims where you're GOING to be (your speed x a short time), not where you are
-    const aimX = player.x + player.vx * CFG.aimLead, aimY = player.y + player.vy * CFG.aimLead, err = b.aimErr || 0, toA = Math.atan2(aimY - b.y, aimX - b.x) + err;   // (err: each shot is a little off)
     if (!b.podRel) b.podRel = K.pods.map(() => 0);
     b.t += dt * (b.tut && b.state === 'charge' ? 0.5 : 1);   // (the tutorial's Beamer charges up twice as slowly: time to raise your shield)
     let speed = 0, want = b.wa, turn = 3;
@@ -6249,10 +6350,10 @@ function updateBeamers(dt) {
     } else if (b.state === 'chase') {
       want = toP; turn = 4; speed = d > CFG.beamRange * 0.75 ? 66 - b.kind * 6 : 10;
       if (d > CFG.beamerLose || safeP) { b.state = 'wander'; b.t = 0; b.next = 0; }
-      else if (d < CFG.beamRange && Math.abs(angDiff(b.ang, toP)) < 0.4) { b.state = 'charge'; b.t = 0; b.aimErr = rr(-1, 1) * CFG.aimError; SFX.beamCharge(clamp(-dx / 200, -1, 1)); }
+      else if (d < CFG.beamRange && Math.abs(angDiff(b.ang, toP)) < 0.4) { b.state = 'charge'; b.t = 0; SFX.beamCharge(clamp(-dx / 200, -1, 1)); }
     } else if (b.state === 'charge') {
-      want = toA; speed = 0;
-      turn = b.t < BEAM.charge - BEAM.lock ? 2 : 0;        // (the aim locks just before it fires)
+      want = toP; speed = 0;
+      turn = b.t < BEAM.charge - BEAM.lock ? 2.2 : 0;        // (the aim locks just before it fires)
       if (b.t >= BEAM.charge) { b.state = 'fire'; b.t = 0; b.hits = []; b.shot = []; }
     } else if (b.state === 'fire') {
       speed = 0; turn = 0;
@@ -6275,10 +6376,11 @@ function updateBeamers(dt) {
     const locked = (b.state === 'charge' && b.t >= BEAM.charge - BEAM.lock) || b.state === 'fire';
     if (!locked) K.pods.forEach((P, i) => {
       const [px, py] = podPos(b, i), cone = P.s ? BEAM.sideCone : BEAM.cone;
-      const want = b.state === 'wander' ? 0 : clamp(angDiff(b.ang, Math.atan2(aimY - py, aimX - px) + err), -cone, cone);
-      b.podRel[i] += clamp(want - b.podRel[i], -5 * dt, 5 * dt);
+      const want = b.state === 'wander' ? 0 : clamp(angDiff(b.ang, Math.atan2(player.y - py, player.x - px)), -cone, cone);
+      b.podRel[i] += clamp(want - b.podRel[i], -6 * dt, 6 * dt);
     });
     // move (a bit floaty)
+    if (b.dark) speed *= 1.4;                                 // (dark: faster)
     let vx = Math.cos(b.state === 'wander' ? b.wa : b.ang) * speed, vy = Math.sin(b.state === 'wander' ? b.wa : b.ang) * speed;
     // keep out of The Anchor's light, apart from each other, and inside the map
     const ad = Math.hypot(b.x, b.y);
@@ -6289,7 +6391,7 @@ function updateBeamers(dt) {
     b.vx += (vx - b.vx) * (1 - Math.exp(-dt * 3)); b.vy += (vy - b.vy) * (1 - Math.exp(-dt * 3));
     b.x += b.vx * dt; b.y += b.vy * dt;
     b.alert = Math.max(0, (b.alert || 0) - dt);
-    if (Math.hypot(b.x, b.y) < CFG.anchorTouch) { b.dead = true; b.deadT = 0; explode(b.x, b.y, 'mix', 1.2); world.anchorPulse = 1; }   // it touched The Anchor: BOOM
+    if (Math.hypot(b.x, b.y) < CFG.anchorTouch && tryKill(b)) { b.dead = true; b.deadT = 0; explode(b.x, b.y, 'mix', 1.2); suckRemains(b.x, b.y, b.dark ? ['#a020ff', '#1a0628', '#f0c0ff'] : ['#8a6cff', '#100c30', '#6e96ff', '#fff']); world.anchorPulse = 1; }   // it touched The Anchor: BOOM — and The Anchor swallows what's left
   }
   world.beamers = world.beamers.filter(b => !b.dead || b.deadT < 1.2);
 }
@@ -6313,19 +6415,28 @@ function beamHits(b) {
   const K = BEAMER_KIND[b.kind];
   beamLines(b).forEach(([ax, ay, bx, by], i) => {
     if (b.dead || b.hits[i] || !laserOn(b, i)) return;
+    // a MINE in the way (closer along the beam than you are)? It's shot!
+    const tYou = segDistB(player.x, player.y, ax, ay, bx, by) < CFG.beamHitR ? segT(player.x, player.y, ax, ay, bx, by) : Infinity;
+    const mine = (world.mines || []).filter(m => !m.gone && segDistB(m.x, m.y, ax, ay, bx, by) < 9 && segT(m.x, m.y, ax, ay, bx, by) < tYou)
+      .sort((p, q) => segT(p.x, p.y, ax, ay, bx, by) - segT(q.x, q.y, ax, ay, bx, by))[0];
+    if (mine) { b.hits[i] = true; mineShot(mine); return; }
     // touching it = anywhere along the way you moved THIS frame (a dash can
     // jump several pixels in one frame — it mustn't skip over the beam)
     const px0 = player.px ?? player.x, py0 = player.py ?? player.y;
     let near = Infinity;
-    for (let k = 0; k <= 4; k++) near = Math.min(near, segDistB(lerp(px0, player.x, k / 4), lerp(py0, player.y, k / 4), ax, ay, bx, by));
+    for (let k = 0; k <= 4; k++) {
+      const qx = lerp(px0, player.x, k / 4), qy = lerp(py0, player.y, k / 4);
+      near = Math.min(near, segDistB(qx, qy, ax, ay, bx, by) - (b.dark ? CFG.darkCone * segT(qx, qy, ax, ay, bx, by) : 0));   // (dark: a CONE, wider further out)
+    }
     if (near >= CFG.beamHitR) return;
     b.hits[i] = true;
     if (S.shield) {
+      if (!tryKill(b)) { SFX.reflect(); shieldBlock(); return; }   // (a DARK Beamer only turns normal)
       b.reflected = true; b.reflectI = i; b.dead = true; b.deadT = 0;
       explode(b.x, b.y, 'mix', 0.7 + b.kind * 0.3, false);
       SFX.reflect(); SFX.beamerExplode(clamp((b.x - player.x) / 200, -1, 1), b.kind);
       shieldBlock();
-    } else hurt(K.dmg, 'beamer', false, true);
+    } else hurt(K.dmg + (b.dark ? 5 : 0), 'beamer', false, true);
   });
 }
 
@@ -6369,7 +6480,8 @@ function drawBeamers(camX, camY) {
     // the crystal body (the Dual Beamer's is a short, wide diamond)
     const body = dual ? [P(r * 0.7, 0), P(0, r * 0.45), P(-r * 0.6, 0), P(0, -r * 0.45)]
                       : [P(r, 0), P(-r * 0.2, r * 0.7), P(-r, r * 0.3), P(-r * 0.55, 0), P(-r, -r * 0.3), P(-r * 0.2, -r * 0.7)];
-    g.fillStyle = '#100c30'; g.beginPath(); body.forEach(([px, py], i) => i ? g.lineTo(px, py) : g.moveTo(px, py)); g.closePath(); g.fill();
+    if (b.dark) drawDarkAura(x, y + bob, r, b.id + 10);
+    g.fillStyle = b.dark ? '#1a0628' : '#100c30'; g.beginPath(); body.forEach(([px, py], i) => i ? g.lineTo(px, py) : g.moveTo(px, py)); g.closePath(); g.fill();
     g.strokeStyle = b.state === 'wander' ? '#5b4cc8' : '#b48cff'; g.lineWidth = 1; g.stroke();
     if (!dual) { g.strokeStyle = '#2c2470'; g.beginPath(); const [ax, ay] = P(r, 0), [bx2, by2] = P(-r * 0.55, 0); g.moveTo(ax, ay); g.lineTo(bx2, by2); g.stroke(); }   // a facet line down the middle
     const [cx, cy] = P(-r * 0.05, 0);
@@ -6424,7 +6536,18 @@ function drawBeams(camX, camY) {
         const [ax, ay, bx, by] = lines[i], f = 1 - (b.t - i * BEAM.gap) / BEAM.fire;
         const x0 = ax - camX, y0 = ay - camY, x1 = bx - camX, y1 = by - camY;
         glowAt((x0 + x1) / 2, (y0 + y1) / 2, CFG.beamRange * 0.6, CFG.beamRange * 0.6, 0.45 * f, GLOW_BLUE);
-        for (const [w, col] of [[5 * f + 2, BEAM_PAL.out], [2, BEAM_PAL.mid], [1, BEAM_PAL.core]]) {
+        if (b.dark) {
+          // a DARK Beamer fires a CONE of purple: narrow at the pod, CFG.darkCone wide at the end
+          const l = Math.hypot(x1 - x0, y1 - y0) || 1, nx = -(y1 - y0) / l, ny = (x1 - x0) / l;
+          for (const [k, col, a] of [[1, DARK_BEAM.out, 0.55 * f + 0.15], [0.5, DARK_BEAM.mid, 0.7 * f + 0.2]]) {
+            const hw = CFG.darkCone * k * (0.85 + 0.15 * Math.sin(S.t * 40 + i));      // (it flickers)
+            g.globalAlpha = a; g.fillStyle = col; g.beginPath();
+            g.moveTo(x0 + nx * 2, y0 + ny * 2); g.lineTo(x1 + nx * hw, y1 + ny * hw); g.lineTo(x1 - nx * hw, y1 - ny * hw); g.lineTo(x0 - nx * 2, y0 - ny * 2); g.closePath(); g.fill();
+          }
+          g.globalAlpha = 1;
+        }
+        const fat = b.dark ? 1.4 : 1, pal = b.dark ? DARK_BEAM : BEAM_PAL;   // (the beam's bright middle)
+        for (const [w, col] of [[(5 * f + 2) * fat, pal.out], [2 * fat, pal.mid], [1 * Math.ceil(fat), pal.core]]) {
           g.strokeStyle = col; g.lineWidth = w; g.beginPath(); g.moveTo(x0, y0);
           for (let k = 1; k <= 6; k++) { const u = k / 6; g.lineTo(lerp(x0, x1, u) + (k < 6 ? rr(-1.5, 1.5) : 0), lerp(y0, y1, u) + (k < 6 ? rr(-1.5, 1.5) : 0)); }
           g.stroke();
@@ -6453,6 +6576,7 @@ function drawBeams(camX, camY) {
 const FX_COLS = {
   red: { ring: '#ff0000', ring2: '#fff', parts: ['#ff0000', '#ff0000', '#000', '#fff', '#a00000'], light: [1, 0.08, 0.05] },
   pure: { ring: '#8a6cff', ring2: '#fff', parts: ['#8a6cff', '#6e96ff', '#fff', '#b48cff'], light: [0.5, 0.45, 1] },
+  dark: { ring: '#c040ff', ring2: '#2a0840', parts: ['#a020ff', '#5a1a8a', '#000', '#f0c0ff'], light: [0.7, 0.1, 1] },   // a DARK enemy turning normal
   mix: { ring: '#ff0000', ring2: '#8a6cff', parts: ['#ff0000', '#8a6cff', '#fff', '#6e96ff', '#000'], light: [1, 0.3, 0.8] },
 };
 const FX = { list: [] };
@@ -6469,6 +6593,7 @@ function updateFX(dt) {
   for (const f of FX.list) f.t += dt;
   FX.list = FX.list.filter(f => f.t < f.life);
   updateSpikes(dt);
+  updateSuck(dt);
 }
 function drawFX(camX, camY) {
   for (const f of FX.list) {
@@ -6491,6 +6616,36 @@ function drawFX(camX, camY) {
       g.beginPath(); g.moveTo(x + Math.cos(ray.a) * r0, y + Math.sin(ray.a) * r0); g.lineTo(x + Math.cos(ray.a) * r1, y + Math.sin(ray.a) * r1); g.stroke();
     }
     g.globalAlpha = 1;
+  }
+}
+
+// =====================================================================
+//  SUCKED IN: the remains of an enemy that blew up on The Anchor. Chunks
+//  fly out from the blast... then The Anchor PULLS them back: they spiral
+//  in, faster and faster, shrinking, and vanish into its core (a pulse).
+// =====================================================================
+const SUCK = { list: [] };
+function suckRemains(x, y, cols, n = 26) {
+  for (let i = 0; i < n; i++) { const a = rnd() * 6.283, v = rr(60, 170); SUCK.list.push({ x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v, t: 0, s: ri(1, 3), col: cols[i % cols.length], spin: rr(0.8, 1.6) * (rnd() < 0.5 ? -1 : 1) }); }
+}
+function updateSuck(dt) {
+  for (const p of SUCK.list) {
+    p.t += dt;
+    const d = Math.hypot(p.x, p.y) || 1, pull = p.t < 0.35 ? 0 : Math.min(1, (p.t - 0.35) * 1.5);   // (a moment of flying out first)
+    const tg = 250 * pull * Math.min(1, d / 80) * p.spin;  // (the swirl fades near the core, so they really fall IN)
+    const ax = -p.x / d * 1600 * pull - p.y / d * tg, ay = -p.y / d * 1600 * pull + p.x / d * tg;   // in + round (a spiral)
+    p.vx = (p.vx + ax * dt) * Math.exp(-dt * (1 + pull * 3)); p.vy = (p.vy + ay * dt) * Math.exp(-dt * (1 + pull * 3));
+    p.x += p.vx * dt; p.y += p.vy * dt;
+    if (d < 14 && p.t > 0.4) { p.gone = true; if (world) world.anchorPulse = Math.max(world.anchorPulse, 0.6); }
+  }
+  SUCK.list = SUCK.list.filter(p => !p.gone && p.t < 4);
+}
+function drawSuck(camX, camY) {
+  for (const p of SUCK.list) {
+    const d = Math.hypot(p.x, p.y), sz = Math.max(1, Math.round(p.s * Math.min(1, d / 60)));   // (shrinking as it gets close)
+    const x = Math.round(p.x - camX), y = Math.round(p.y - camY), l = Math.hypot(p.vx, p.vy) || 1;
+    g.fillStyle = p.col; g.fillRect(x, y, sz, sz);
+    if (l > 120) { g.globalAlpha = 0.5; g.fillRect(Math.round(x - p.vx / l * 4), Math.round(y - p.vy / l * 4), 1, 1); g.globalAlpha = 1; }   // a streak behind it
   }
 }
 
@@ -6537,21 +6692,44 @@ function segT(px, py, ax, ay, bx, by) { const dx = bx - ax, dy = by - ay, l2 = d
 function updateMines(dt) {
   for (const m of world.mines) {
     m.t += dt;
-    const d = Math.hypot(player.x - m.x, player.y - m.y);
-    m.near = clamp(1 - (d - CFG.mineRange) / 90, 0, 1);       // (it blinks faster as you come close)
+    const d = Math.hypot(player.x - m.x, player.y - m.y), range = CFG.mineRange + (m.dark ? 15 : 0);   // (a DARK mine goes off from further away)
+    m.near = clamp(1 - (d - range) / 90, 0, 1);
+    if (m.arm > 0) { m.arm -= dt; continue; }               // (just turned normal: re-arming)       // (it blinks faster as you come close)
     if (m.near > 0.15) { m.beepT = (m.beepT || 0) - dt; if (m.beepT <= 0) { m.beepT = 0.7 - m.near * 0.55; SFX.mineBeep(m.near, clamp((m.x - player.x) / 200, -1, 1)); } }   // ticking faster as you come close
-    if (d < CFG.mineRange) mineBlast(m);
+    if (m.chain !== undefined) { m.chain -= dt; if (m.chain <= 0) { mineShot(m); continue; } }   // (set off by a blast next to it)
+    if (d < range) mineBlast(m);
   }
   world.mines = world.mines.filter(m => !m.gone);
 }
 function mineBlast(m) {
-  m.gone = true;
+  const dmg = CFG.mineDamage + (m.dark ? 10 : 0);       // (a dark mine hits 10 harder)
+  if (m.dark) { m.dark = false; m.arm = 2; explode(m.x, m.y, 'dark', 1); } else m.gone = true;   // a dark mine only turns NORMAL (and re-arms)
   explode(m.x, m.y, 'pure', 1.4, false);                  // (its own sound, not the usual boom)
   SFX.mineBlast();
   const s = held();
   if (s && !s.pure && !s.anim) { s.pure = true; s.charges = 0; }
   for (const q of world.shards) if (q.state === 'free' && !q.pure && Math.hypot(q.x - m.x, q.y - m.y) < CFG.mineBlast) { q.pure = true; q.charges = 0; }
-  if (!S.shield) hurt(CFG.mineDamage, 'mine', false, true);
+  if (!S.shield) hurt(dmg, 'mine', false, true);
+}
+// TRICK SHOT: a Beamer's laser hits a mine (lure one so a mine is between
+// you). The mine goes off in a much BIGGER blast that destroys every enemy
+// near it — the shooter too. They burst in blue-purple, not red: they're
+// destroyed by their own purification, not corrupted.
+// (You only get hurt / your shard purified if you're inside the normal blast.)
+function mineShot(m) {
+  const dmg = CFG.mineDamage + (m.dark ? 10 : 0);
+  if (m.dark) { m.dark = false; m.arm = 2; delete m.chain; explode(m.x, m.y, 'dark', 1); } else m.gone = true;
+  explode(m.x, m.y, 'pure', 2.2, false); SFX.mineBlast();
+  S.shake = Math.max(S.shake, 8);
+  const R = CFG.mineShotBlast, near = (e) => Math.hypot(e.x - m.x, e.y - m.y) < R;
+  for (const b of world.beamers) if (!b.dead && near(b) && tryKill(b)) { b.dead = true; b.deadT = 0; explode(b.x, b.y, 'pure', 0.8 + b.kind * 0.3); SFX.beamerExplode(clamp((b.x - player.x) / 200, -1, 1), b.kind); }
+  for (const b of world.bashers) if (!b.dead && near(b) && tryKill(b)) { b.dead = true; explode(b.x, b.y, 'pure', 1); }
+  for (const o of world.mines) if (!o.gone && o !== m && near(o)) o.chain = 0.12;   // other mines nearby go off too (a moment later)
+  for (const q of world.shards) if (q.state === 'free' && !q.pure && Math.hypot(q.x - m.x, q.y - m.y) < CFG.mineBlast) { q.pure = true; q.charges = 0; }
+  if (Math.hypot(player.x - m.x, player.y - m.y) < CFG.mineBlast) {
+    const s = held(); if (s && !s.pure && !s.anim) { s.pure = true; s.charges = 0; }
+    if (!S.shield) hurt(dmg, 'mine', false, true);
+  }
 }
 function drawMines(camX, camY) {
   for (const m of world.mines) {
@@ -6573,13 +6751,15 @@ function drawMines(camX, camY) {
     }
     // its danger ring: a faint circle of dots that turns white when you're close
     g.globalAlpha = 0.25 + m.near * 0.6; g.fillStyle = m.near > 0.6 && blink ? '#fff' : '#6e96ff';
-    for (let i = 0; i < 28; i++) { if ((i + Math.floor(m.t * 6)) % 3 === 0) continue; const a = i / 28 * 6.2832 + m.t * 0.3; g.fillRect(Math.round(x + Math.cos(a) * CFG.mineRange), Math.round(y + Math.sin(a) * CFG.mineRange), 1, 1); }
+    const mr = CFG.mineRange + (m.dark ? 15 : 0); if (m.dark) g.fillStyle = m.near > 0.6 && blink ? '#fff' : '#c040ff';
+    for (let i = 0; i < 28; i++) { if ((i + Math.floor(m.t * 6)) % 3 === 0) continue; const a = i / 28 * 6.2832 + m.t * 0.3; g.fillRect(Math.round(x + Math.cos(a) * mr), Math.round(y + Math.sin(a) * mr), 1, 1); }
     g.globalAlpha = 1;
     // the spikes (6, slowly turning) and the core
     g.strokeStyle = '#b48cff'; g.lineWidth = 1; g.beginPath();
     for (let i = 0; i < 6; i++) { const a = i / 6 * 6.283 + m.t * 0.8; g.moveTo(x + Math.cos(a) * 4, y + Math.sin(a) * 4); g.lineTo(x + Math.cos(a) * 10, y + Math.sin(a) * 10); }
     g.stroke();
-    diamond(Math.round(x), Math.round(y), 6, '#100c30'); diamond(Math.round(x), Math.round(y), 4.5, '#8a6cff');
+    if (m.dark) drawDarkAura(x, y, 10, m.id + 50);
+    diamond(Math.round(x), Math.round(y), 6, m.dark ? '#1a0628' : '#100c30'); diamond(Math.round(x), Math.round(y), 4.5, m.dark ? '#a020ff' : m.arm > 0 && Math.floor(S.t * 10) % 2 ? '#3a2c8a' : '#8a6cff');
     diamond(Math.round(x), Math.round(y), 2, blink ? '#fff' : '#6e96ff');
   }
 }
@@ -6596,6 +6776,8 @@ const BASH = { windup: 0.85, bash: 0.68, speed: 300, recover: 1.3 };
 function updateBashers(dt) {
   const safeP = Math.hypot(player.x, player.y) < CFG.beamerSafe - 30;
   for (const b of world.bashers) {
+    if (b.dead) continue;                                 // (blown up this frame — by a shot mine)
+    darkTick(b, dt);
     b.t += dt;
     const dx = player.x - b.x, dy = player.y - b.y, d = Math.hypot(dx, dy), toP = Math.atan2(dy, dx);
     let vx = 0, vy = 0;
@@ -6604,21 +6786,22 @@ function updateBashers(dt) {
       if (b.hunt > 0) { b.hunt -= dt; b.wa = toP; }        // ALERTED (a shard was torn off nearby): it comes for you
       else if (b.home && Math.hypot(b.x - b.home.x, b.y - b.home.y) > CFG.guardRange) b.wa = Math.atan2(b.home.y - b.y, b.home.x - b.x);   // GUARDING: back toward its podium
       else if (b.t > b.next) { b.wa += rr(-1.5, 1.5); b.next = b.t + rr(2, 4); }
-      const sp = b.hunt > 0 ? 75 : 22;
+      const sp = (b.hunt > 0 ? 75 : 22) * (b.dark ? 1.4 : 1);
       vx = Math.cos(b.wa) * sp; vy = Math.sin(b.wa) * sp; b.ang = b.wa;
-      if (d < CFG.basherSight && !safeP) { b.state = 'windup'; b.t = 0; b.aimErr = rr(-1, 1) * CFG.aimError; SFX.basherWind(clamp(-dx / 200, -1, 1)); }
+      if (d < CFG.basherSight && !safeP) { b.state = 'windup'; b.t = 0; SFX.basherWind(clamp(-dx / 200, -1, 1)); }
     } else if (b.state === 'windup') {
-      if (b.t < BASH.windup - 0.15) b.ang += clamp(angDiff(b.ang, toP + (b.aimErr || 0)), -5 * dt, 5 * dt);   // aims at you (a little off)... then locks just before it goes
+      if (b.t < BASH.windup - 0.15) b.ang += clamp(angDiff(b.ang, toP), -5 * dt, 5 * dt);   // aims... then locks just before it goes
       vx = -Math.cos(b.ang) * 18; vy = -Math.sin(b.ang) * 18;            // (pulls back a little, like winding up a punch)
       if (b.t >= BASH.windup) { b.state = 'bash'; b.t = 0; b.hit = false; SFX.bash(clamp(-dx / 200, -1, 1)); explode(b.x - Math.cos(b.ang) * 6, b.y - Math.sin(b.ang) * 6, 'pure', 0.3, false); }   // (a burst of light as it launches)
     } else if (b.state === 'bash') {
-      vx = Math.cos(b.ang) * BASH.speed; vy = Math.sin(b.ang) * BASH.speed;
+      const bs = BASH.speed * (b.dark ? 1.3 : 1);           // (dark: faster)
+      vx = Math.cos(b.ang) * bs; vy = Math.sin(b.ang) * bs;
       if (rnd() < 0.7) b.ghosts.push({ x: b.x, y: b.y, life: 0.35 });
       if (rnd() < 0.8) { const a = b.ang + Math.PI + rr(-0.5, 0.5); particles.push({ x: b.x + rr(-4, 4), y: b.y + rr(-4, 4), vx: Math.cos(a) * rr(40, 120), vy: Math.sin(a) * rr(40, 120), life: 0.35, max: 0.35, col: rnd() < 0.4 ? '#fff' : '#8a6cff', s: 1, streak: true }); }   // sparks spraying off behind it
       if (b.t >= BASH.bash) { b.state = 'recover'; b.t = 0; }
     } else {
       vx = b.vx * 0.9; vy = b.vy * 0.9;
-      if (b.t >= BASH.recover) { b.state = d < CFG.basherSight * 1.6 && !safeP ? 'windup' : 'wander'; b.t = 0; b.aimErr = rr(-1, 1) * CFG.aimError; if (b.state === 'windup') SFX.basherWind(clamp(-dx / 200, -1, 1)); }
+      if (b.t >= BASH.recover) { b.state = d < CFG.basherSight * 1.6 && !safeP ? 'windup' : 'wander'; b.t = 0; if (b.state === 'windup') SFX.basherWind(clamp(-dx / 200, -1, 1)); }
     }
     // out of The Anchor's light, and inside the map
     const ad = Math.hypot(b.x, b.y);
@@ -6632,7 +6815,8 @@ function updateBashers(dt) {
     // the bash hits if you were anywhere along the path it just moved (a fast
     // Basher on a slow frame could otherwise jump right past you)
     if (b.state === 'bash' && !b.hit && segDistB(player.x, player.y, ox, oy, b.x, b.y) < CFG.basherHit) { b.hit = true; basherHits(b); if (b.dead) continue; }
-    if (Math.hypot(b.x, b.y) < CFG.anchorTouch) { b.dead = true; explode(b.x, b.y, 'mix', 1.2); world.anchorPulse = 1; continue; }   // it touched The Anchor: BOOM
+    if (b.dark) dropSlime(b, Math.hypot(b.x - ox, b.y - oy));   // a dark Basher leaves SLIME
+    if (Math.hypot(b.x, b.y) < CFG.anchorTouch && tryKill(b)) { b.dead = true; explode(b.x, b.y, 'mix', 1.2); suckRemains(b.x, b.y, ['#8a6cff', '#100c30', '#b48cff', '#fff']); world.anchorPulse = 1; continue; }   // it touched The Anchor: BOOM — and The Anchor swallows what's left
     // the TAIL: each segment follows the one in front of it (that's what makes it wave)
     let px = b.x, py = b.y;
     for (const seg of b.tail) { seg.x += (px - seg.x) * Math.min(1, dt * 14); seg.y += (py - seg.y) * Math.min(1, dt * 14); const sd = Math.hypot(seg.x - px, seg.y - py); if (sd > 5) { seg.x = px + (seg.x - px) / sd * 5; seg.y = py + (seg.y - py) / sd * 5; } px = seg.x; py = seg.y; }
@@ -6640,11 +6824,14 @@ function updateBashers(dt) {
     b.ghosts = b.ghosts.filter(gh => gh.life > 0);
   }
   world.bashers = world.bashers.filter(b => !b.dead);
+  updateSlime(dt);
 }
 function basherHits(b) {
   const s = held();
   if (S.shield) {
     // SHIELD: it bursts into spikes... and cracks your shard (once per shard)
+    // (a DARK Basher only turns normal — and bounces off)
+    if (!tryKill(b)) { shieldBlock(); SFX.basherBreak(); b.vx *= -0.4; b.vy *= -0.4; b.state = 'recover'; b.t = 0; return; }
     b.dead = true;
     explode(b.x, b.y, 'mix', 1.3);
     shootSpikes(b.x, b.y, 18, 150, CFG.spikeDamage);
@@ -6652,7 +6839,7 @@ function basherHits(b) {
     if (s && !s.anim && !s.split && s.half === undefined) splitShard(s, b.ang);
     else shieldBlock();
   } else {
-    hurt(CFG.basherDamage, 'basher', false, true);
+    hurt(CFG.basherDamage + (b.dark ? 5 : 0), 'basher', false, true);
     S.shake = Math.max(S.shake, 9);
     // KNOCKED AWAY: you fly off the way the Basher was going (you can't steer for a moment)
     player.dashT = 0; player.vx = Math.cos(b.ang) * CFG.basherKnock; player.vy = Math.sin(b.ang) * CFG.basherKnock; S.launchT = 0.3;
@@ -6683,6 +6870,7 @@ function drawBashers(camX, camY) {
     if (b.alert > 0) text('!', x, y - b.r - 14 - (1 - b.alert) * 4, 2, '#fff', 0.1, 'center');   // it just noticed you
     const wind = b.state === 'windup' ? b.t / BASH.windup : 0, bash = b.state === 'bash';
     const shake = wind * 2.5, sx = x + rr(-shake, shake), sy = y + rr(-shake, shake);
+    if (b.dark) drawDarkAura(sx, sy, b.r, b.id + 20);
     if (wind > 0) {                                         // WINDING UP: streaks of energy getting sucked into it
       for (let k = 0; k < 12; k++) {
         const a = hash2(k, b.id, 941) * 6.2832, u = (S.t * (1.5 + hash2(k, b.id, 942)) + hash2(k, b.id, 943)) % 1, d0 = (1 - u) * (34 - wind * 10) + b.r, d1 = d0 + 4 + wind * 4;
@@ -6698,10 +6886,10 @@ function drawBashers(camX, camY) {
     glowAt(sx, sy, b.r * 2.4, b.r * 2.4, 0.4 + wind * 0.5 + (bash ? 0.4 : 0), GLOW_BLUE);
     // the SPIKES: they stick out further while it winds up
     g.strokeStyle = wind > 0.5 || bash ? '#fff' : '#b48cff'; g.lineWidth = 1; g.beginPath();
-    for (let i = 0; i < 10; i++) { const a = i / 10 * 6.283 + b.t * (bash ? 12 : 1.5), l = b.r + 3 + wind * 5 + (i % 2 ? 2 : 0); g.moveTo(sx + Math.cos(a) * b.r * 0.6, sy + Math.sin(a) * b.r * 0.6); g.lineTo(sx + Math.cos(a) * l, sy + Math.sin(a) * l); }
+    for (let i = 0; i < 10; i++) { const a = i / 10 * 6.283 + b.t * (bash ? 12 : 1.5), l = (b.r + 3 + wind * 5 + (i % 2 ? 2 : 0)) * (b.dark ? 1.6 : 1); g.moveTo(sx + Math.cos(a) * b.r * 0.6, sy + Math.sin(a) * b.r * 0.6); g.lineTo(sx + Math.cos(a) * l, sy + Math.sin(a) * l); }
     g.stroke();
     // the ball
-    g.fillStyle = '#100c30'; g.beginPath(); g.arc(sx, sy, b.r * 0.75, 0, 6.2832); g.fill();
+    g.fillStyle = b.dark ? '#1a0628' : '#100c30'; g.beginPath(); g.arc(sx, sy, b.r * 0.75, 0, 6.2832); g.fill();
     g.strokeStyle = '#8a6cff'; g.stroke();
     diamond(Math.round(sx + Math.cos(b.ang) * 2), Math.round(sy + Math.sin(b.ang) * 2), 2.5 + wind * 2, wind > 0.6 ? '#fff' : '#6e96ff');
     if (b.state === 'windup') {                              // where it's going to bash: a dotted line
@@ -6745,6 +6933,7 @@ const MAW = { open: 1.1, lock: 0.3, rest: 1.8 };   // (how long the lightning la
 function updateMaws(dt) {
   for (const m of world.maws) {
     m.t += dt; m.fin += dt * (m.state === 'open' ? 6 : 2);
+    darkTick(m, dt);
     if (m.state === 'dying') { if (m.t > 0.9) { m.dead = true; explode(m.x, m.y, 'red', 2.4); SFX.mawDie(); } continue; }
     const dx = player.x - m.x, dy = player.y - m.y, d = Math.hypot(dx, dy), toP = Math.atan2(dy, dx);
     let vx = 0, vy = 0;
@@ -6755,11 +6944,11 @@ function updateMaws(dt) {
       if (d < CFG.mawSight) { m.state = 'track'; m.t = 0; }
     } else if (m.state === 'track') {
       m.ang += clamp(angDiff(m.ang, toP), -2 * dt, 2 * dt);
-      if (d > CFG.mawRange * 0.8) { vx = Math.cos(toP) * 24; vy = Math.sin(toP) * 24; }
+      if (d > CFG.mawRange * 0.8) { const ms = m.dark ? 34 : 24; vx = Math.cos(toP) * ms; vy = Math.sin(toP) * ms; }
       if (d > CFG.mawSight * 1.5) { m.state = 'idle'; m.t = 0; }
-      else if (d < CFG.mawRange && Math.abs(angDiff(m.ang, toP)) < 0.3) { m.state = 'open'; m.t = 0; m.aimErr = rr(-1, 1) * CFG.aimError; SFX.mawOpen(clamp(-dx / 250, -1, 1)); }
+      else if (d < CFG.mawRange && Math.abs(angDiff(m.ang, toP)) < 0.3) { m.state = 'open'; m.t = 0; SFX.mawOpen(clamp(-dx / 250, -1, 1)); }
     } else if (m.state === 'open') {
-      if (m.t < MAW.open - MAW.lock) m.ang += clamp(angDiff(m.ang, toP + (m.aimErr || 0)), -1.2 * dt, 1.2 * dt);   // aims... then locks
+      if (m.t < MAW.open - MAW.lock) m.ang += clamp(angDiff(m.ang, toP), -1.6 * dt, 1.6 * dt);   // aims... then locks
       if (m.t >= MAW.open) { m.state = 'zap'; m.t = 0; m.zapT = rr(CFG.mawZap[0], CFG.mawZap[1]); m.bolt = mawBolt(m); m.touch = 0; m.blockT = 0; SFX.mawZap(clamp(-dx / 250, -1, 1)); mawStrike(m); }
     } else if (m.state === 'zap') {
       // the lightning STAYS for a few seconds: every moment you touch it, it hurts
@@ -6800,6 +6989,7 @@ function mawStrike(m) {
   const tA = along(0, 0, 26), tMain = along(player.x, player.y, 7), tP = Math.min(tMain, ...B.branches.map(br => { for (let j = 1; j < br.length; j++) if (segDistB(player.x, player.y, br[j - 1][0], br[j - 1][1], br[j][0], br[j][1]) < 6) return br.k + j / br.length; return Infinity; }));
   if (tA < tP) {                                              // it hit THE ANCHOR
     B.main.length = Math.ceil(tA) + 1; B.main[B.main.length - 1] = [0, 0];
+    if (!tryKill(m)) return;                                  // (a dark one only turns normal)
     m.state = 'dying'; m.t = 0; world.anchorPulse = 1; S.shake = Math.max(S.shake, 6); SFX.corrupted();
     return;
   }
@@ -6817,8 +7007,9 @@ function mawTouch(m, dt) {
     if (m.blockT <= 0) { m.blockT = 1; shieldBlock(); SFX.reflect(); burstParticles(player.x, player.y, 20, 1, PURE_COLS); }
     return;
   }
-  m.touch += CFG.mawDps * dt;
-  while (m.touch >= CFG.mawDps / 4) { m.touch -= CFG.mawDps / 4; hurt(CFG.mawDps / 4, 'maw', true); if (S.mode !== 'play') return; }
+  m.touch += (CFG.mawDps + (m.dark ? 5 : 0)) * dt;
+  const dps = CFG.mawDps + (m.dark ? 5 : 0);
+  while (m.touch >= dps / 4) { m.touch -= dps / 4; hurt(dps / 4, 'maw', true); if (S.mode !== 'play') return; }
 }
 function drawMaws(camX, camY) {
   for (const m of world.maws) {
@@ -6827,6 +7018,7 @@ function drawMaws(camX, camY) {
     const open = m.state === 'open' ? Math.min(1, m.t / 0.4) : m.state === 'zap' ? 1 : m.state === 'rest' ? Math.max(0, 1 - m.t * 2) : 0;
     const sh = dying * 3 + (m.state === 'open' ? m.t / MAW.open * 1.5 : 0), sx = x + rr(-sh, sh), sy = y + rr(-sh, sh), r = m.r;
     glowAt(sx, sy, r * 2.6, r * 2.6, 0.5 + open * 0.4, red ? GLOW : GLOW_BLUE);
+    if (m.dark) drawDarkAura(sx, sy, r, m.id + 80);
     // a slow ring of dashes circling it (its "territory")
     g.globalAlpha = 0.35 + open * 0.5; g.fillStyle = red ? '#ff0000' : open > 0.5 ? '#fff' : '#6e96ff';
     dotSquare(sx, sy, r * 2.1, -S.t * (0.3 + open * 3) + m.id, 40, 1, 4, Math.floor(S.t * 6));
@@ -6852,7 +7044,7 @@ function drawMaws(camX, camY) {
     // the BODY: two halves (upper and lower jaw) that open apart at the front
     const gap = open * 0.55;
     for (const side of [-1, 1]) {
-      g.fillStyle = red ? '#300000' : '#100c30';
+      g.fillStyle = red ? '#300000' : m.dark ? '#1a0628' : '#100c30';
       g.beginPath(); g.moveTo(sx, sy);
       for (let i = 0; i <= 16; i++) { const a = m.ang + side * (gap + (Math.PI - gap) * i / 16); g.lineTo(sx + Math.cos(a) * r, sy + Math.sin(a) * r); }
       g.closePath(); g.fill();
@@ -6907,10 +7099,180 @@ function addEnemies(w, R, E) {
   };
   w.mines = []; w.bashers = []; w.maws = [];
   const nMines = Array.isArray(E.mines) ? E.mines[0] + Math.floor(R() * (E.mines[1] - E.mines[0] + 1)) : (E.mines || 0);   // (mines: [from, to])
-  // (most mines ring the podiums like a minefield; the rest are scattered)
-  for (let i = 0; i < nMines; i++) { const p = (i < nMines * 0.65 && guardSpot(w, R, i, 100, 200, w.mines, 60)) || spot(300, 110, w.mines); if (p) w.mines.push({ x: p[0], y: p[1], t: R() * 9, id: i, near: 0 }); }
+  // mines come in CLUMPS of 3-5: most clumps guard a podium, some are scattered
+  // — and in sectors with minesInBlobs, many hide INSIDE the Purification
+  const okMine = (x, y) => Math.hypot(x, y) > CFG.beamerSafe + 40 && Math.hypot(x, y) < edgeRadiusAt(w.edge, Math.atan2(y, x)) - 120 && !w.podiums.some(p => Math.hypot(p.x - x, p.y - y) < 80);
+  for (let ci = 0; w.mines.length < nMines && ci < 80; ci++) {
+    let c = null;
+    if (E.minesInDanger && w.danger && w.danger.length && R() < 0.4) {
+      const d = w.danger[Math.floor(R() * w.danger.length)], a = R() * 6.283, dd = R() * d.r * 0.5;
+      c = [d.x + Math.cos(a) * dd, d.y + Math.sin(a) * dd];
+    } else if (E.minesInBlobs && w.nulls.length && R() < 0.6) {
+      const n = w.nulls[Math.floor(R() * w.nulls.length)], a = R() * 6.283, d = R() * n.r * 0.6;
+      c = [n.x + Math.cos(a) * d, n.y + Math.sin(a) * d];
+    } else c = (ci % 3 !== 2 && guardSpot(w, R, ci, 110, 210, [], 0)) || spot(300, 0, []);
+    if (!c || !okMine(c[0], c[1]) || w.mines.some(m => Math.hypot(m.x - c[0], m.y - c[1]) < 90)) continue;
+    const size = 3 + Math.floor(R() * 3);
+    for (let j = 0; j < size && w.mines.length < nMines; j++) {
+      for (let tries = 0; tries < 20; tries++) {
+        const a = R() * 6.283, d = j ? 20 + R() * 30 : 0, x = c[0] + Math.cos(a) * d, y = c[1] + Math.sin(a) * d;
+        if (!okMine(x, y) || w.mines.some(m => Math.hypot(m.x - x, m.y - y) < 24)) continue;
+        w.mines.push({ x, y, t: R() * 9, id: w.mines.length, near: 0, dark: !!insideDangerIn(w.danger, x, y) }); break;
+      }
+    }
+  }
   for (let i = 0; i < (E.bashers || 0); i++) { const p = guardSpot(w, R, i * 2 + 1, 150, 260, w.bashers, 120) || spot(560, 300, w.bashers); if (p) w.bashers.push({ x: p[0], y: p[1], home: p[2] || null, vx: 0, vy: 0, ang: 0, wa: R() * 6.283, r: 11, state: 'wander', t: 0, next: 0, id: i, ghosts: [], tail: Array.from({ length: 9 }, () => ({ x: p[0], y: p[1] })) }); }
   for (let i = 0; i < (E.maws || 0); i++) { const p = spot(520, 500, w.maws); if (p) w.maws.push({ x: p[0], y: p[1], ang: 0, wa: R() * 6.283, r: 24, state: 'idle', t: 0, next: 0, fin: R() * 6, id: i, bolt: null }); }
+}
+</script>
+<script>
+// V0ID3D — danger.js: DANGERBLOBS (sector 3) — dark purple pools that hurt you and turn enemies DARK
+"use strict";
+
+// =====================================================================
+//  DANGERBLOBS: pools of dark purple scattered over the map.
+//   - YOU in one: CFG.dangerDps damage per second
+//   - an ENEMY that touches one turns DARK: dark purple, with purple sparks
+//     swirling around it, +5 damage and faster. Dark Beamers fire FATTER
+//     beams, dark Bashers grow longer spikes and leave a trail of purple
+//     SLIME (it slows you; each blob lasts CFG.slimeLife seconds), dark mines
+//     hit even harder (+10) from further away.
+//   - killing a dark enemy only turns it NORMAL again (tryKill) — then you
+//     have to kill it a second time. (If it touches a Dangerblob again, it
+//     turns dark again.)
+// =====================================================================
+const GLOW_DARK = makeSoftDot(170, 40, 255, 64);           // a magenta-purple glow
+const DARK_BEAM = { out: '#7a10d0', mid: '#d070ff', core: '#fff' };
+const DARK = { revive: 1.5 };                              // after turning normal it can't be hurt (or turn dark) for this long
+
+function addDangerBlobs(w, R, D) {
+  w.danger = []; w.slime = [];
+  for (let k = 0; k < 3000 && w.danger.length < D.count; k++) {
+    const a = R() * 6.283, r = D.r[0] + R() * (D.r[1] - D.r[0]), d = 380 + Math.sqrt(R()) * (edgeRadiusAt(w.edge, a) - 600), x = Math.cos(a) * d, y = Math.sin(a) * d;
+    if (Math.hypot(x, y) - r * 1.4 < CFG.beamerSafe + 30) continue;                        // never on The Anchor
+    if (Math.hypot(x, y) + r * 1.4 > edgeRadiusAt(w.edge, a) - 80) continue;
+    if (w.podiums.some(p => Math.hypot(p.x - x, p.y - y) < r * 1.4 + 90)) continue;      // never on a podium
+    if (w.danger.some(o => Math.hypot(o.x - x, o.y - y) < o.r + r + 60)) continue;
+    if (w.nulls.some(n => Math.hypot(n.x - x, n.y - y) < n.r * 1.2 + r * 1.2)) continue;  // (not inside the Purification either)
+    const shape = [], N = 40, ph = [R() * 6.3, R() * 6.3, R() * 6.3];
+    for (let i = 0; i < N; i++) { const b = i / N * 6.2832; shape.push(Math.max(0.55, 1 + 0.22 * Math.sin(b * 2 + ph[0]) + 0.14 * Math.sin(b * 3 + ph[1]) + 0.08 * Math.sin(b * 5 + ph[2]))); }
+    w.danger.push({ x, y, r, shape, ph: R() * 6.3, id: w.danger.length });
+  }
+}
+function dangerR(d, i) { return d.r * d.shape[((i % d.shape.length) + d.shape.length) % d.shape.length]; }
+function insideDangerIn(list, x, y) {
+  for (const d of list || []) {
+    const dx = x - d.x, dy = y - d.y, dist = Math.hypot(dx, dy); if (dist > d.r * 1.5) continue;
+    const a = Math.atan2(dy, dx), i = Math.round((a < 0 ? a + 6.2832 : a) / 6.2832 * d.shape.length);
+    if (dist < dangerR(d, i)) return d;
+  }
+  return null;
+}
+const insideDanger = (x, y) => world && world.danger ? insideDangerIn(world.danger, x, y) : null;
+
+// an enemy touches a Dangerblob: it turns DARK
+function darken(e) {
+  if (e.dark || e.reviveT > 0) return;
+  e.dark = true;
+  burstParticles(e.x, e.y, 30, 1.1, ['#a020ff', '#5a1a8a', '#000', '#e0a0ff']);
+  SFX.darken(player ? clamp((e.x - player.x) / 200, -1, 1) : 0);
+}
+// it's "killed" while dark: it only turns NORMAL (and can't be hurt for a moment)
+function undark(e) {
+  e.dark = false; e.reviveT = DARK.revive;
+  explode(e.x, e.y, 'dark', 1.1, false);
+  SFX.undark(player ? clamp((e.x - player.x) / 200, -1, 1) : 0);
+}
+// every way of killing an enemy asks this first: true = it really dies
+function tryKill(e) {
+  if (e.reviveT > 0) return false;
+  if (e.dark) { undark(e); return false; }
+  return true;
+}
+// each frame, for every enemy: count down its "just turned normal" time, and darken it if it's in a Dangerblob
+function darkTick(e, dt) {
+  if (e.reviveT > 0) e.reviveT -= dt;
+  else if (!e.dark && world.danger && insideDanger(e.x, e.y)) darken(e);
+}
+// dark Bashers leave SLIME as they move (it slows you down)
+function dropSlime(b, moved) {
+  b.slimeD = (b.slimeD || 0) + moved;
+  if (b.slimeD < 12) return;
+  b.slimeD = 0;
+  world.slime.push({ x: b.x + rr(-3, 3), y: b.y + rr(-3, 3), r: rr(9, 13), t: CFG.slimeLife, ph: rnd() * 6.3 });
+}
+function updateSlime(dt) {
+  if (!world.slime) return;
+  for (const s of world.slime) s.t -= dt;
+  world.slime = world.slime.filter(s => s.t > 0);
+}
+const inSlime = (x, y) => world.slime && world.slime.some(s => Math.hypot(s.x - x, s.y - y) < s.r + 3);
+
+// the dark purple AURA around a dark enemy: a magenta glow, sparks swirling round it, now and then a tiny bolt
+function drawDarkAura(x, y, r, id) {
+  glowAt(x, y, r * 2.6, r * 2.6, 0.55 + 0.15 * Math.sin(S.t * 6 + id), GLOW_DARK);
+  for (let k = 0; k < 8; k++) {
+    const a = S.t * (1.4 + (k % 3) * 0.5) * (k % 2 ? -1 : 1) + k * 0.8 + id, rad = r * (1.2 + (k % 3) * 0.25) + Math.sin(S.t * 4 + k) * 2;
+    g.fillStyle = k % 3 ? '#a020ff' : '#f0c0ff'; g.fillRect(Math.round(x + Math.cos(a) * rad), Math.round(y + Math.sin(a) * rad), k % 4 ? 1 : 2, 1);
+  }
+  // a few glowing ORBS circling it (tilted orbits, so they swing in front and behind)
+  for (let k = 0; k < 3; k++) {
+    const a = S.t * (2.2 + k * 0.6) + k * 2.094 + id, rad = r * 1.9 + k * 3;
+    const ox = x + Math.cos(a) * rad, oy = y + Math.sin(a) * rad * 0.5 - Math.sin(a + k) * r * 0.3;
+    glowAt(ox, oy, 7, 7, 0.8, GLOW_DARK);
+    g.fillStyle = '#7a10d0'; g.fillRect(Math.round(ox) - 2, Math.round(oy) - 1, 4, 2); g.fillRect(Math.round(ox) - 1, Math.round(oy) - 2, 2, 4);
+    g.fillStyle = '#f0c0ff'; g.fillRect(Math.round(ox) - 1, Math.round(oy) - 1, 1, 1);
+    for (let t = 1; t <= 3; t++) { const ta = a - t * 0.18; g.globalAlpha = 0.5 - t * 0.14; g.fillStyle = '#a020ff'; g.fillRect(Math.round(x + Math.cos(ta) * rad), Math.round(y + Math.sin(ta) * rad * 0.5 - Math.sin(ta + k) * r * 0.3), 1, 1); }   // a little tail
+    g.globalAlpha = 1;
+  }
+  const fq = Math.floor(S.t * 10);
+  if (hash2(id, fq, 1301) < 0.3) { const a = hash2(id, fq, 1302) * 6.283; drawBolts([[boltPts(x + Math.cos(a) * r * 0.6, y + Math.sin(a) * r * 0.6, x + Math.cos(a) * r * 1.8, y + Math.sin(a) * r * 1.8, id + fq, 4, 3), 2300 + id, true]], 0, 0, { glow: '#a020ff', core: '#f0c0ff', spr: GLOW_DARK }, 0.8); }
+}
+
+// the Dangerblobs' texture: deep purples (made once)
+let DANGER_PAT = null;
+function dangerPattern() {
+  if (DANGER_PAT) return DANGER_PAT;
+  const c = makeCanvas(128, 128), x = c.getContext('2d'), im = x.createImageData(128, 128);
+  const pal = [[10, 2, 18], [20, 5, 34], [34, 8, 56], [54, 14, 88], [96, 26, 150]];
+  for (let y = 0; y < 128; y++) for (let xx = 0; xx < 128; xx++) {
+    const v = tileNoise(xx, y, 32, 1401) * 0.6 + tileNoise(xx, y, 16, 1402) * 0.4;
+    let col = pal[Math.min(4, Math.max(0, Math.floor((v - 0.25) * 7)))];
+    if (hash2(xx, y, 1403) < 0.003) col = [220, 120, 255];
+    const i = (y * 128 + xx) * 4; im.data[i] = col[0]; im.data[i + 1] = col[1]; im.data[i + 2] = col[2]; im.data[i + 3] = 255;
+  }
+  x.putImageData(im, 0, 0);
+  return (DANGER_PAT = g.createPattern(c, 'repeat'));
+}
+function drawDanger(camX, camY) {
+  if (!world.danger) return;
+  // the SLIME trails first (under the pools)
+  for (const s of world.slime) {
+    const x = s.x - camX, y = s.y - camY; if (x < -20 || x > W + 20 || y < -20 || y > H + 20) continue;
+    const k = Math.min(1, s.t / 0.6);                       // (fades in its last 0.6 s)
+    g.globalAlpha = 0.85 * k; g.fillStyle = '#2a0840'; g.beginPath(); g.ellipse(x, y, s.r, s.r * 0.8, s.ph, 0, 6.2832); g.fill();
+    g.globalAlpha = 0.6 * k; g.fillStyle = '#7a20c0'; g.fillRect(Math.round(x - s.r * 0.3), Math.round(y - s.r * 0.35), 2, 1);   // a shine on the goo
+    g.globalAlpha = 1;
+  }
+  const pat = dangerPattern(); pat.setTransform(new DOMMatrix().translate(Math.round(-camX - S.t * 4), Math.round(-camY + S.t * 2)));
+  for (const d of world.danger) {
+    const x = d.x - camX, y = d.y - camY; if (x < -d.r * 1.6 || x > W + d.r * 1.6 || y < -d.r * 1.6 || y > H + d.r * 1.6) continue;
+    const N = d.shape.length, pts = [];
+    for (let i = 0; i < N; i++) { const a = i / N * 6.2832, r = dangerR(d, i) * (1 + 0.04 * Math.sin(S.t * 1.6 + i * 0.6 + d.ph)); pts.push([x + Math.cos(a) * r, y + Math.sin(a) * r]); }
+    glowAt(x, y, d.r * 1.7, d.r * 1.7, 0.5 + 0.1 * Math.sin(S.t * 2 + d.ph), GLOW_DARK);
+    g.fillStyle = pat; g.beginPath(); pts.forEach(([px, py], i) => i ? g.lineTo(px, py) : g.moveTo(px, py)); g.closePath(); g.fill();
+    // the rim: magenta, pulsing, with dashes crawling round it
+    g.strokeStyle = '#5a1a8a'; g.lineWidth = 3; g.stroke();
+    const fq = Math.floor(S.t * 8);
+    pts.forEach(([px, py], i) => { if ((i + fq) % 4 === 0) return; g.fillStyle = i % 2 ? '#c040ff' : '#f0a0ff'; g.fillRect(Math.round(px), Math.round(py), 2, 2); });
+    // bubbles rising and popping inside
+    for (let k = 0; k < 7; k++) {
+      const u = (S.t * (0.3 + hash2(k, d.id, 1501) * 0.4) + hash2(k, d.id, 1502)) % 1, a = hash2(k, d.id, 1503) * 6.283, rr2 = hash2(k, d.id, 1504) * d.r * 0.7;
+      const bx = x + Math.cos(a) * rr2, by = y + Math.sin(a) * rr2 - u * 10, s = u < 0.85 ? 1 + Math.floor(u * 3) : 0;
+      if (s) { g.strokeStyle = '#b040ff'; g.lineWidth = 1; g.strokeRect(Math.round(bx), Math.round(by), s, s); }
+      else { g.fillStyle = '#f0c0ff'; g.fillRect(Math.round(bx) - 1, Math.round(by), 1, 1); g.fillRect(Math.round(bx) + 2, Math.round(by), 1, 1); }   // pop!
+    }
+  }
 }
 </script>
 <script>
@@ -7423,8 +7785,8 @@ function infectWall(L, ax, by, cx, cy, fin) {
 // =====================================================================
 const LIGHT_TEX = 256;                                   // the dust texture is 256 x 256 cells and repeats
 // smooth random ("value noise") that wraps around at the texture's edge, so the repeat has no seam
-function tileNoise(x, y, cell, seed) {
-  const n = LIGHT_TEX / cell, gx = x / cell, gy = y / cell;
+function tileNoise(x, y, cell, seed, period = LIGHT_TEX) {   // (period = how big the repeating texture is)
+  const n = period / cell, gx = x / cell, gy = y / cell;
   const x0 = Math.floor(gx), y0 = Math.floor(gy), fx = smoothstep(gx - x0), fy = smoothstep(gy - y0);
   const h = (i, j) => hash2(((i % n) + n) % n, ((j % n) + n) % n, seed);
   return lerp(lerp(h(x0, y0), h(x0 + 1, y0), fx), lerp(h(x0, y0 + 1), h(x0 + 1, y0 + 1), fx), fy);
@@ -7853,7 +8215,7 @@ function drawClear() {
   const a = clamp((T - C.text) * 1.5, 0, 1);    // the words appear after the seal is whole
   if (a <= 0) return;
   g.globalAlpha = a;
-  text(world.opt.podiums ? 'REALITY CORRUPTED' : areaName() + ' STABILIZED', W / 2, Math.max(4, bar / 2 - 10), 3, world.opt.podiums ? '#ff0000' : '#fff', Math.max(0.05, 0.5 - (T - C.text) * 0.4), 'center');
+  text(world.opt.podiums ? 'SECTOR CORRUPTED' : areaName() + ' STABILIZED', W / 2, Math.max(4, bar / 2 - 10), 3, world.opt.podiums ? '#ff0000' : '#fff', Math.max(0.05, 0.5 - (T - C.text) * 0.4), 'center');
   if (world.opt.podiums) text(areaName(), W / 2, bar + 6, 1, '#8c8c96', 0.05, 'center');
   const t = Math.ceil(Math.max(0, S.time)), m = Math.floor(t / 60), s = String(t % 60).padStart(2, '0');
   if (CFG.timer) text('TIME LEFT  ' + m + ':' + s, W / 2, bar + 6, 1, '#ff0000', 0.05, 'center');
@@ -8032,12 +8394,14 @@ function drawGlassPiece(SH, c, ox, oy, z, rot, tilt, alpha) {
   if (face < 0.7) { g.globalAlpha = alpha * (0.7 - face) * 0.6; g.fillStyle = '#000'; g.fill(); }     // turned away = darker
   if (glint > 0.03) { g.globalAlpha = alpha * glint * 0.6; g.fillStyle = '#fff'; g.fill(); }          // facing the light = GLINT
   g.globalAlpha = alpha * (c.shiny || glint > 0.3 ? 1 : 0.55);
-  g.strokeStyle = glint > 0.3 || c.shiny ? '#fff' : '#ff0000';
+  g.strokeStyle = glint > 0.3 || c.shiny ? '#fff' : DEATH_PAL.crack;
   g.lineWidth = 1 / Math.max(0.3, p * Math.abs(sq)); g.stroke();                                    // the sharp glass edge
   g.restore();
 }
 
-// the cracks: thick pure red with a thin white line on top. heat = how much
+// the death's colours: BLUE and PURPLE (you were purified)
+const DEATH_PAL = { crack: '#7a5cff', fine: '#5b7cff', bits: '#b48cff', flash: '#5b3cff' };
+// the cracks: thick violet with a thin white line on top. heat = how much
 // light leaks through them (0..1): brighter, thicker, whiter
 function drawGlassCracks(SH, L, heat, zoom) {
   const seg = [];
@@ -8055,14 +8419,15 @@ function drawGlassCracks(SH, L, heat, zoom) {
   g.translate(SH.ix, SH.iy); g.scale(zoom, zoom); g.translate(-SH.ix, -SH.iy);
   const path = list => { g.beginPath(); for (const [a, b] of list) { g.moveTo(a[0], a[1]); g.lineTo(b[0], b[1]); } };
   path(seg);
-  g.strokeStyle = '#ff0000'; g.lineWidth = 3 + heat * 3; g.stroke();
+  if (heat > 0) { g.globalCompositeOperation = 'lighter'; g.globalAlpha = 0.3 * heat; g.strokeStyle = DEATH_PAL.flash; g.lineWidth = 4 + heat * 10; g.stroke(); g.globalAlpha = 1; g.globalCompositeOperation = 'source-over'; }   // light pouring through them
+  g.strokeStyle = DEATH_PAL.crack; g.lineWidth = 3 + heat * 3; g.stroke();
   g.strokeStyle = '#fff'; g.lineWidth = 1 + heat; g.stroke();
   path(diag);                                              // the finer corner-to-corner cracks
-  g.globalAlpha = 0.45 + heat * 0.35; g.strokeStyle = '#ff0000'; g.lineWidth = 1; g.stroke();
+  g.globalAlpha = 0.45 + heat * 0.35; g.strokeStyle = DEATH_PAL.fine; g.lineWidth = 1; g.stroke();
   g.globalAlpha = 1;
   for (let i = 0; i < 30; i++) {                           // crushed glass right where it hit
     const a = hash2(i, 1, 81) * 6.283, d = hash2(i, 2, 81) * 10;
-    g.fillStyle = hash2(i, 3, 81) < 0.6 ? '#fff' : '#ff0000';
+    g.fillStyle = hash2(i, 3, 81) < 0.6 ? '#fff' : DEATH_PAL.bits;
     g.fillRect(Math.round(SH.ix + Math.cos(a) * d), Math.round(SH.iy + Math.sin(a) * d), 1 + (i % 2), 1);
   }
   g.restore();
@@ -8107,13 +8472,22 @@ function drawGlassDeath(t, T, px, py) {
   const shake = still ? 0 : dropped ? (u < 0.12 ? 8 : 0.6) : kick + heat * 2;
   const shx = rr(-shake, shake), shy = rr(-shake, shake);
 
-  g.fillStyle = '#000'; g.fillRect(0, 0, W, H);           // behind the glass: nothing but black
+  g.fillStyle = '#000'; g.fillRect(0, 0, W, H);           // behind the glass: nothing but black...
+  const pure = T === CRACK;                                // (the HP death = you're being PURIFIED: it all turns blue)
+  if (pure) glowAt(SH.ix, SH.iy, 220, 220, dropped ? 0.7 * Math.max(0, 1 - u / 1.1) : 0.25 + heat * 0.4, GLOW_BLUE);   // ...or the Purification's light, behind it
+  // when the glass bursts, the pieces show the BLUE picture
+  if (pure && dropped && !SH.tinted) {
+    SH.tinted = true; const c = makeCanvas(W, H), x = c.getContext('2d');
+    x.drawImage(SH.fr, 0, 0); x.globalCompositeOperation = 'color'; x.globalAlpha = 0.75; x.fillStyle = '#6a4cff'; x.fillRect(0, 0, W, H);
+    SH.pat = g.createPattern(c, 'no-repeat');
+  }
   g.save(); g.translate(shx, shy);
   if (!dropped) {
     // BEFORE THE DROP: the frozen screen, with pieces falling out of it
     g.save(); g.translate(SH.ix, SH.iy); g.scale(zoom, zoom); g.translate(-SH.ix, -SH.iy);
     g.drawImage(SH.fr, 0, 0);
-    for (const c of SH.tris) if (c.fall && t > c.fallT) { g.fillStyle = '#000'; g.beginPath(); g.moveTo(...c.poly[0]); g.lineTo(...c.poly[1]); g.lineTo(...c.poly[2]); g.fill(); }
+    if (pure) { g.globalCompositeOperation = 'color'; g.globalAlpha = Math.min(0.75, t / T.still * 0.75); g.fillStyle = '#6a4cff'; g.fillRect(-20, -20, W + 40, H + 40); g.globalAlpha = 1; g.globalCompositeOperation = 'source-over'; }   // the colour DRAINS to blue-violet
+    for (const c of SH.tris) if (c.fall && t > c.fallT) { g.fillStyle = pure ? '#140c40' : '#000'; g.beginPath(); g.moveTo(...c.poly[0]); g.lineTo(...c.poly[1]); g.lineTo(...c.poly[2]); g.fill(); }
     g.restore();
     for (const c of SH.tris) if (c.fall && t > c.fallT) {
       const f = t - c.fallT, z = -f * f * 2.2;              // falling AWAY from you (z < 0 = smaller)
@@ -8122,6 +8496,27 @@ function drawGlassDeath(t, T, px, py) {
     }
     drawGlassCracks(SH, L, heat, zoom);
   } else {
+    // THE BURST OF LIGHT where you were: a white-blue flash, rays, a shockwave
+    // ring racing out — drawn FIRST, so the pieces fly in front of it
+    // WARP STREAKS: lines of light shooting out from the middle (you're flying INTO the light)
+    if (pure && u < 1.1) {
+      const k = u / 1.1; g.globalCompositeOperation = 'lighter';
+      for (let i = 0; i < 60; i++) {
+        const a = hash2(i, 9, 141) * 6.2832, sp = 0.5 + hash2(i, 9, 142), r0 = ((k * sp * 2 + hash2(i, 9, 143)) % 1) * 420, r1 = r0 + 12 + r0 * 0.25;
+        g.globalAlpha = (1 - k) * 0.8; g.strokeStyle = i % 4 ? '#7fd8ff' : '#fff'; g.lineWidth = 1;
+        g.beginPath(); g.moveTo(SH.ix + Math.cos(a) * r0, SH.iy + Math.sin(a) * r0); g.lineTo(SH.ix + Math.cos(a) * r1, SH.iy + Math.sin(a) * r1); g.stroke();
+      }
+      g.globalCompositeOperation = 'source-over'; g.globalAlpha = 1;
+    }
+    if (pure && u < 0.7) {
+      const k = u / 0.7, e = 1 - Math.pow(1 - k, 3);
+      glowAt(SH.ix, SH.iy, 30 + e * 200, 30 + e * 200, (1 - k) * 1.3, k < 0.15 ? PDOTS[3] : GLOW_BLUE);
+      g.globalCompositeOperation = 'lighter'; g.lineWidth = 2;
+      for (let i = 0; i < 18; i++) { const a = i / 18 * 6.2832 + 0.2, r0 = 10 + e * 60, r1 = r0 + 40 + e * 320; g.globalAlpha = (1 - k) * 0.7; g.strokeStyle = i % 3 ? DEATH_PAL.crack : '#fff'; g.beginPath(); g.moveTo(SH.ix + Math.cos(a) * r0, SH.iy + Math.sin(a) * r0); g.lineTo(SH.ix + Math.cos(a) * r1, SH.iy + Math.sin(a) * r1); g.stroke(); }
+      g.globalCompositeOperation = 'source-over'; g.globalAlpha = 1 - k; g.fillStyle = '#fff';
+      for (let i = 0; i < 120; i++) { const a = i / 120 * 6.2832, r = 15 + e * 420; g.fillRect(Math.round(SH.ix + Math.cos(a) * r), Math.round(SH.iy + Math.sin(a) * r), 2, 2); }
+      g.globalAlpha = 1;
+    }
     // THE EXPLOSION: every piece flies at you. Draw the FAR ones first, so
     // the near ones cover them (that's how depth works — painter's algorithm)
     const list = [];
@@ -8142,18 +8537,32 @@ function drawGlassDeath(t, T, px, py) {
       const p = 1 / (1 - z), x = W / 2 + (d.x + d.dx * d.spd * bt - W / 2) * p, y = H / 2 + (d.y + d.dy * d.spd * bt - H / 2) * p;
       if (x < -4 || y < -4 || x > W + 4 || y > H + 4) continue;
       const tw = Math.sin(d.tw + bt * 40);
-      g.fillStyle = tw > 0.6 ? '#fff' : d.red ? '#ff0000' : '#8c8c96';
+      g.fillStyle = tw > 0.6 ? '#fff' : d.red ? DEATH_PAL.bits : '#8c8c96';
       const s = Math.max(1, Math.round(d.s * p * 0.8)); g.fillRect(Math.round(x), Math.round(y), s, s);
     }
   }
   g.restore();
   bloom(dropped ? 0.9 : 0.5 + heat * 0.8);                 // glowing cracks + glints
+  if (pure) {
+    // every CREAK: a blue flash and the picture splits into colours
+    for (const c of T.creaks) if (t >= c && t < c + 0.07) { g.globalAlpha = 0.3; g.fillStyle = DEATH_PAL.flash; g.fillRect(0, 0, W, H); g.globalAlpha = 1; colorFringe(ri(3, 6) * (rnd() < 0.5 ? -1 : 1)); }
+    // purified sparks drifting UP across the screen the whole time (more and more)
+    const n = Math.round(20 + Math.min(1, t / T.drop) * 50);
+    for (let i = 0; i < n; i++) {
+      const x = hash2(i, 7, 151) * W, y = H - ((t * (25 + hash2(i, 7, 152) * 60) + hash2(i, 7, 153) * H) % (H + 20));
+      g.fillStyle = hash2(i, 7, 154) < 0.3 ? '#fff' : hash2(i, 7, 155) < 0.5 ? '#b48cff' : '#6e96ff';
+      g.fillRect(Math.round(x + Math.sin(t * 3 + i) * 4), Math.round(y), 1, hash2(i, 7, 156) < 0.3 ? 2 : 1);
+    }
+    // a second, slower shockwave after the burst
+    if (dropped && u > 0.12 && u < 0.9) { const k = (u - 0.12) / 0.78, r = 20 + (1 - Math.pow(1 - k, 2)) * 380; g.globalAlpha = 1 - k; g.fillStyle = '#7fd8ff'; for (let i = 0; i < 90; i++) { const a = i / 90 * 6.2832; g.fillRect(Math.round(SH.ix + Math.cos(a) * r), Math.round(SH.iy + Math.sin(a) * r * 0.9), 2, 2); } g.globalAlpha = 1; }
+  }
+  if (pure) { const f = clamp((t - (T.black - 0.4)) / 0.4, 0, 1); if (f > 0) { g.globalAlpha = f; g.fillStyle = '#000'; g.fillRect(0, 0, W, H); g.globalAlpha = 1; } }   // (fades to black instead of cutting)
   if (dropped && u < 0.05) { g.fillStyle = '#fff'; g.fillRect(0, 0, W, H); }   // the flash of the drop
   else if (dropped && u < 0.35) colorFringe(ri(3, 7) * (rnd() < 0.5 ? -1 : 1));
   // THE LENS: the last piece hits the camera
-  // THE HIT: for a split second the frozen frame flashes red and splits into colours
-  if (T === CRACK && t < 0.14) { g.globalAlpha = 0.45 * (1 - t / 0.14); g.fillStyle = '#ff0000'; g.fillRect(0, 0, W, H); g.globalAlpha = 1; colorFringe(ri(4, 8) * (rnd() < 0.5 ? -1 : 1)); }
-  if (t >= T.lens) {
+  // THE HIT: for a split second the frozen frame flashes blue-violet and splits into colours
+  if (T === CRACK && t < 0.14) { g.globalAlpha = 0.45 * (1 - t / 0.14); g.fillStyle = DEATH_PAL.flash; g.fillRect(0, 0, W, H); g.globalAlpha = 1; colorFringe(ri(4, 8) * (rnd() < 0.5 ? -1 : 1)); }
+  if (t >= T.lens && T !== CRACK) {                         // (the HP death has no lens crack at the end)
     if (!SH.lens) SH.lens = makeLensCrack();
     const v = t - T.lens;
     if (v < 0.04) { g.fillStyle = '#fff'; g.fillRect(0, 0, W, H); }
@@ -8192,7 +8601,6 @@ function softDeadKey(key) {
 function drawSoftDead() {
   g.fillStyle = '#000'; g.fillRect(0, 0, W, H);
   const a = Math.min(1, (S.deadT || 0) / 0.8);               // (it all fades in gently)
-  if (S.deadLens) { g.globalAlpha = 0.22; drawLens(S.deadLens, 1); g.globalAlpha = 1; }   // (the crack in the lens is still there, faintly)
   g.globalAlpha = a;
   glowAt(W / 2, H / 2 - 40, 150, 26, 0.3 * a);
   const jolt = (S.deadT || 0) < 0.5 ? rr(-2, 2) : 0;          // (it jolts in, glitching)
@@ -8222,10 +8630,21 @@ const REALITIES = [
       rifts: false, tears: false, locators: false, portal: false, farRifts: false, farLightning: false,   // no rifts, tears, locators or portal...
       podiums: true,                                         // ...each shard is torn off ITS podium, corrupted, and put back (purify.js)
       front: true,                                           // the Purification creeps in from the edge — if it reaches The Anchor, you fail
-      beamers: { single: 3, dual: 2, triple: 0 },             // Beamers: 3, Dual Beamers: 2 (no Triple Beamer here)
+      beamers: { single: 3, dual: 0, triple: 0 },             // just plain Beamers here
       enemies: { mines: [10, 20], bashers: 4, maws: 0 } },    // Purification Mines (10-20: the most common!) and Bashers — no Thundermaws here (enemies.js)
-    { name: '???', open: false },
-    { name: '???', open: false },
+    { name: 'PURE SEAS', open: true, shards: 8, icon: 'seas', mapScale: 1.3,   // one more podium than BEGINNING, on a bigger map (room for the seas)
+      rifts: false, tears: false, locators: false, portal: false, farRifts: false, farLightning: false,
+      podiums: true, front: true,
+      blobs: { count: 4, r: [230, 300], parts: [4, 6] },     // SEAS: HUGE lumpy blobs of Purification (each one several blobs melted together)
+      beamers: { single: 3, dual: 2, triple: 0 },
+      enemies: { mines: [16, 24], bashers: 4, maws: 0, minesInBlobs: true } },   // mines hide INSIDE the seas
+    { name: 'DANGERBLOBS', open: true, shards: 8, icon: 'danger',
+      rifts: false, tears: false, locators: false, portal: false, farRifts: false, farLightning: false,
+      podiums: true, front: true,
+      blobs: { count: 5, r: [80, 120], parts: [1, 2] },
+      dangerBlobs: { count: 9, r: [55, 95] },                 // dark purple pools: they hurt YOU, and turn enemies DARK (danger.js)
+      beamers: { single: 4, dual: 2, triple: 0 },
+      enemies: { mines: [16, 22], bashers: 5, maws: 0, minesInDanger: true } },
     { name: '???', open: false },
     { name: '???', open: false },
   ] },
@@ -8234,6 +8653,19 @@ const REALITIES = [
   { name: '???', open: false },
 ];
 
+// UNLOCKING: a sector opens when you've corrupted the one before it (saved
+// in this browser). 'open: false' above = it doesn't exist yet (???).
+// In the TEST VERSION (your own copy, BUILD_ID 'dev') every sector that
+// exists is unlocked, so you can test any level straight away.
+const TEST_VERSION = BUILD_ID === 'dev';
+function beatenList() { try { return JSON.parse(localStorage.getItem('v0id3d_beaten') || '[]'); } catch { return []; } }
+function markBeaten(name) { try { const b = beatenList(); if (!b.includes(name)) { b.push(name); localStorage.setItem('v0id3d_beaten', JSON.stringify(b)); } } catch {} }
+function cardOpen(it, i) {
+  if (!it.open) return false;                              // (doesn't exist yet)
+  if (S.mode === 'realities' || TEST_VERSION || i === 0) return true;
+  const prev = S.reality.sectors[i - 1];
+  return !!prev && beatenList().includes(prev.name);
+}
 // what the screens' headers say (and the "AREA 1" text in a level, now the sector's name)
 function areaName() { return S.sector ? S.sector.name : 'AREA ' + S.area; }
 const MENU_MODES = ['title', 'mission', 'tutask', 'realities', 'sectors', 'settings', 'soundtrack'];
@@ -8325,13 +8757,13 @@ function menuHover() {
 }
 function menuPick(i) {
   const it = menuList()[i]; if (!it) return;
-  if (!it.open) { SFX.denied(); S.menuShake = { i, t: 0.35 }; return; }       // locked: a "nope" and a shake
+  if (!cardOpen(it, i)) { SFX.denied(); S.menuShake = { i, t: 0.35 }; return; }       // locked: a "nope" and a shake
   SFX.menuPick();
   if (S.mode === 'realities') toSectors(it); else startSector(it);
 }
 function menuKey(key) {
   const n = menuList().length;
-  const first = menuList().findIndex(c => c.open);
+  const first = menuList().findIndex((c, i) => cardOpen(c, i));
   if (key === 'arrowleft' || key === 'a') { S.menuSel = S.menuSel < 0 ? first : (S.menuSel - 1 + n) % n; SFX.menuMove(); }
   if (key === 'arrowright' || key === 'd') { S.menuSel = S.menuSel < 0 ? first : (S.menuSel + 1) % n; SFX.menuMove(); }
   if (key === 'enter' || key === ' ') { if (S.menuSel < 0) { S.menuSel = first; SFX.menuMove(); } else menuPick(S.menuSel); }
@@ -8354,6 +8786,24 @@ function sectorIconPodium(cx, cy, sel) {
   drawBolts(bolts, 0, 0, pal, 0.9);
   diamond(cx, cy - 6, 6, sel ? '#ff0000' : '#8a6cff'); diamond(cx, cy - 6, 2.5, '#fff');
 }
+// PURE SEAS' picture: lumpy blobs of Purification, with a podium in the middle
+function sectorIconSeas(cx, cy, sel) {
+  glowAt(cx, cy, 30, 24, 0.4, GLOW_BLUE);
+  for (const [ox, oy, r] of [[-12, 4, 11], [-2, -3, 13], [11, 3, 10], [3, 9, 8]]) {
+    g.fillStyle = '#3a2c8a'; g.beginPath(); g.arc(cx + ox, cy + oy, r, 0, 6.2832); g.fill();
+  }
+  g.strokeStyle = '#8a6cff'; g.lineWidth = 1;
+  for (let i = 0; i < 3; i++) { const y = cy - 4 + i * 5, ph = S.t * 2 + i; g.beginPath(); for (let x = -16; x <= 16; x += 2) g.lineTo(cx + x, y + Math.sin(x * 0.4 + ph) * 1.5); g.stroke(); }   // waves
+  diamond(cx, cy - 2, 4, sel ? '#ff0000' : '#b48cff'); diamond(cx, cy - 2, 1.5, '#fff');
+}
+// DANGERBLOBS' picture: a dark purple pool with a magenta rim, bubbling, and a dark Beamer over it
+function sectorIconDanger(cx, cy, sel) {
+  glowAt(cx, cy, 28, 24, 0.5, GLOW_DARK);
+  g.fillStyle = '#1a0628'; g.beginPath(); g.ellipse(cx, cy + 4, 20, 12, 0, 0, 6.2832); g.fill();
+  g.strokeStyle = '#c040ff'; g.lineWidth = 1; g.stroke();
+  for (let k = 0; k < 4; k++) { const u = (S.t * 0.6 + k * 0.25) % 1; g.fillStyle = '#b040ff'; g.fillRect(Math.round(cx - 12 + k * 8), Math.round(cy + 8 - u * 10), 2, 2); }
+  diamond(cx, cy - 6, 7, '#1a0628'); diamond(cx, cy - 6, 5, sel ? '#ff0000' : '#c040ff'); diamond(cx, cy - 6, 2, '#fff');
+}
 // a little pixel PADLOCK (for locked cards)
 function padlock(cx, cy, col) {
   g.fillStyle = col;
@@ -8367,7 +8817,7 @@ function drawMenu() {
   text(reals ? 'CHOOSE A REALITY' : 'CHOOSE A SECTOR', W / 2, 34, 3, '#fff', 0.15, 'center');
   text(reals ? 'WHERE WILL YOU BE SENT?' : 'REALITY: ' + S.reality.name, W / 2, 62, 1, '#ff0000', 0.05, 'center');
   for (const c of menuCards()) {
-    const sel = c.i === S.menuSel, open = c.it.open;
+    const sel = c.i === S.menuSel, open = cardOpen(c.it, c.i);
     const sh = S.menuShake && S.menuShake.i === c.i ? Math.round(Math.sin(S.menuShake.t * 60) * 3 * S.menuShake.t / 0.35) : 0;
     const x = c.x + sh, y = c.y - (sel && open ? 3 : 0);
     if (sel && open) glowAt(x + c.w / 2, y + c.h / 2, c.w * 0.8, c.h * 0.7, 0.35);
@@ -8381,10 +8831,18 @@ function drawMenu() {
       const cx = x + c.w / 2, cy = y + 52;
       if (reals) { glowAt(cx, cy, 22, 22, 0.5); diamond(cx, cy, 11, '#000'); diamond(cx, cy, 9, '#ff0000'); diamond(cx, cy, 4, '#fff'); }
       else if (c.it.icon === 'podium') sectorIconPodium(cx, cy, sel);
+      else if (c.it.icon === 'seas') sectorIconSeas(cx, cy, sel);
+      else if (c.it.icon === 'danger') sectorIconDanger(cx, cy, sel);
       else { glowAt(cx, cy, 26, 26, 0.35); g.fillStyle = '#ff0000'; dotSquare(cx, cy, 22, S.t * 0.6, 40, 1, 4, Math.floor(S.t * 6));
              g.fillStyle = '#fff'; dotSquare(cx, cy, 13, -S.t * 0.9, 16, 1); diamond(cx, cy, 4, '#fff'); }
       const nm = c.it.name, sc = textWidth(nm, 2) <= c.w - 10 ? 2 : 1;
       text(nm, cx, y + c.h - (sc === 2 ? 26 : 20), sc, sel ? '#fff' : '#c8c8d0', sel ? 0.12 : 0.03, 'center');
+    } else if (c.it.open) {
+      // it EXISTS but you haven't earned it yet: its name, dim, and what to do
+      padlock(x + c.w / 2, y + 52, '#5a5a64');
+      const nm = c.it.name, sc = textWidth(nm, 2) <= c.w - 10 ? 2 : 1;
+      text(nm, x + c.w / 2, y + c.h - (sc === 2 ? 30 : 24), sc, '#3c3c42', 0, 'center');
+      text('BEAT SECTOR ' + c.i + ' FIRST', x + c.w / 2, y + c.h - 10, 1, '#5a5a64', 0, 'center');
     } else {
       padlock(x + c.w / 2, y + 52, '#3c3c42');
       text('???', x + c.w / 2, y + c.h - 26, 2, '#3c3c42', 0, 'center');
@@ -8392,6 +8850,7 @@ function drawMenu() {
     }
   }
   text('A / D  SELECT      ENTER  CHOOSE      ESC  BACK', W / 2, H - 22, 1, '#8c8c96', 0.03, 'center');
+  if (TEST_VERSION && !reals) text('TEST VERSION: ALL SECTORS UNLOCKED', W / 2, 76, 1, '#5a5a64', 0, 'center');
 }
 
 // the mouse pointer (the real one is hidden over the game) — only on the menus
@@ -8785,8 +9244,9 @@ function render() {
 
   drawBackground(camX, camY, k, late);
   drawLighting(camX, camY);                        // the lights reveal the dust and fog in the void
-  if (world.opt.podiums) drawBarrier(camX, camY);    // the map's border: the Purification's barrier (BEHIND the Purification)
   drawNullification(camX, camY);                   // the Purification — UNDER everything else, so you can always see what's in it
+  if (world.opt.podiums) drawBarrier(camX, camY);    // the map's REAL border (cyan force field) — over the Purification, so you always see it
+  if (world.danger) drawDanger(camX, camY);          // Dangerblobs + slime (danger.js)
   if (S.spawn && S.spawn.t < SPAWN.burst) drawAnchorForming(camX, camY); else drawAnchor(camX, camY, k);
   drawBlobs(camX, camY, k, late);
   drawLocators(camX, camY);
@@ -8814,6 +9274,7 @@ function render() {
   drawBeams(camX, camY);                           // (on top of the darkness: you see them coming)
   if (world.maws) drawMawBolts(camX, camY);
   drawSpikes(camX, camY);
+  drawSuck(camX, camY);                            // remains being sucked into The Anchor
   drawFX(camX, camY);                              // EXPLOSIONS
   for (const p of particles) {
     g.globalAlpha = clamp(p.life / p.max * 1.5, 0, 1); g.fillStyle = p.col;
