@@ -62,12 +62,13 @@ const CFG = {
   shieldBlocks: 2,        // a corrupted shard can block this many beams, then it's purified again (blue)
   breakTime: 2.4,
   tearHeal: 0.3,          // let go of E and the podium's lightning heals back this fast (0.3 = about 8 s from almost torn)         // how long you HOLD E to tear a purified shard off its podium
-  podiumRange: 26,        // how close you must be to a podium (to tear its shard off, or put it back)
+  podiumRange: 42,        // how close you must be to a podium (to tear its shard off, or put it back)
   shieldSlow: 0.55,       // you move at this speed while holding the shield up
   // THE CREEPING PURIFICATION (podium sectors)
   nullSpeed: 2.8,         // how fast it creeps in (pixels per second, on average). MEASURED (with its arms): doing nothing = it reaches The Anchor in ~6 min
   nullProtect: 160,       // a filled podium keeps it this far away (in its direction)
   nullFail: 90,           // it gets this close to The Anchor = you fail
+  podiumBlast: 230,       // when a podium is fully corrupted, it destroys EVERY enemy this close to it
   podiumCorruptTime: 10,  // a corrupted shard has to sit on its podium this long (seconds) before the whole podium is corrupted
   tearAlert: 420,         // tearing a shard off its podium ALERTS every enemy this close (pixels)...
   alertHunt: 6,           // ...and Bashers come hunting you for this many seconds
@@ -87,20 +88,26 @@ const CFG = {
   beamHitR: 10,           // a laser hits you if it passes this close to your middle (its width + your size)
   beamerSafe: 250,
   // PURIFICATION MINES
-  mineRange: 30,          // get this close and it goes off
+  mineRange: 22,          // get this close and it goes off
   mineBlast: 70,          // its explosion purifies corrupted shards this close to it
   deathVolume: 0.45,      // how loud the death sounds are (1 = full)
   dangerDps: 25,          // standing in a DANGERBLOB (sector 3) hurts this much per second
-  darkCone: 30,           // a DARK Beamer fires a CONE: this wide (pixels, each side) at its far end
-  slimeSlow: 0.45,        // walking through a dark Basher's slime: this fraction of your speed
+  // DARK enemies (they touched a Dangerblob) — how much stronger they get:
+  darkDmg: 2,             // +this much damage (Beamers, Bashers, Thundermaws)
+  darkMineDmg: 5,         // a dark mine: +this much damage...
+  darkMineRange: 8,       // ...and goes off from this much further away
+  darkSpeed: 1.15,        // this much faster
+  darkCone: 18,           // a DARK Beamer fires a CONE: this wide (pixels, each side) at its far end
+  slimeSlow: 0.65,        // walking through a dark Basher's slime: this fraction of your speed
   slimeLife: 2,           // ...and each blob of slime lasts this long (seconds)
+  mineChain: 90,          // a mine going off sets off every other mine this close (they don't hurt you again)
   mineShotBlast: 150,     // a mine SHOT by a Beamer blows up every enemy this close (bigger than a Beamer's reach, so the shooter goes too)
   mineDamage: 15,
   // BASHERS
   basherSight: 210,
   basherDamage: 25,
   basherKnock: 380,       // a Basher hitting you throws you this fast, the way it was going
-  basherHit: 26,
+  basherHit: 19,
   guardRange: 210,        // enemies GUARD a podium: they never wander further than this from it
   anchorTouch: 34,        // an enemy that gets this close to The Anchor's middle EXPLODES          // a bash hits you if it passes this close (pixels) — a bit bigger than it looks, so near misses count
   spikeDamage: 3,         // each spike when one bursts on your shield
@@ -122,7 +129,7 @@ const CFG = {
 //  reloads into the new version. build-site.js stamps a real number in here
 //  for the website; 'dev' (your own copy) never checks.
 // =====================================================================
-const BUILD_ID = '20261011121504';
+const BUILD_ID = '20261011123157';
 // THE PUBLIC LOCK: true = the website/app won't start, it just says
 // "NO IVAR. NO." (your own 'dev' copy always plays). false = everyone can play.
 const PUBLIC_LOCKED = false;
@@ -1312,7 +1319,7 @@ const SFX = {
     bell(3136, 0.05, 1.6, -0.3, 0.05); bell(2637, 0.05, 1.6, 0.3, 0.1);
   },
   // a mine close by: a soft "tik" that gets faster as you come closer
-  mineBeep(k, pan) { blip([1760 + k * 880], 0.03, 0.03 + k * 0.05, 'sine', pan); },
+  mineBeep(k, pan) { blip([1760 + k * 880], 0.035, 0.12 + k * 0.18, 'square', pan); blip([880 + k * 440], 0.035, 0.06 + k * 0.08, 'sine', pan); },
   basherWind(pan) { swoop(BASH.windup, 120, 4, 'sawtooth', 1200, 0.05, pan); burst(BASH.windup, 0.08, 800, 2, true, pan, 3000); },
   bash(pan) { burst(0.3, 0.3, 1500, 0.7, false, pan, 300); thump(0.4, 180, 60, 0.2); },
   basherBreak() { for (let i = 0; i < 8; i++) blip([rr(1500, 4000)], 0.02, 0.03, 'square', rr(-1, 1), i * 0.02); },
@@ -1633,7 +1640,7 @@ function musicTick() {
   portalMusicTick();
   // which song: in the soundtrack player, the one you picked; on the menus, the menu theme
   const want = S.mode === 'soundtrack' ? JUKE.playing
-    : S.mode === 'title' || S.mode === 'realities' || S.mode === 'sectors' || S.mode === 'settings' ? 'menu' : null;
+    : S.mode === 'title' || S.mode === 'realities' || S.mode === 'difficulty' || S.mode === 'sectors' || S.mode === 'settings' ? 'menu' : null;
   if (want !== MUS.track) {
     // in the soundtrack player, switching songs CUTS the old one cleanly
     // (its long notes and echoes) instead of letting it ring over the new one
@@ -2266,7 +2273,7 @@ function addPodiums(w, R) {
 }
 // BEAMERS: spread over the map, never near The Anchor
 function addBeamers(w, R, B) {
-  const kinds = [...Array(B.single).fill(1), ...Array(B.dual).fill(2), ...(R() < B.triple ? [3] : [])];
+  const kinds = [...Array(diffCount(B.single)).fill(1), ...Array(diffCount(B.dual)).fill(2), ...(R() < B.triple * diff().spawn ? [3] : [])];   // (more / fewer on harder / easier difficulties)
   kinds.forEach((kind, i) => {
     // first try to put it GUARDING a podium (a ring around it)
     const gp = guardSpot(w, R, i, 130, 230, w.beamers, 90);
@@ -2446,7 +2453,9 @@ function sealComplete() {
 // death menu can say what killed you. small = a Rift's little bite (it doesn't
 // use the "can't be hit again" cooldown, it has its own 2-second rhythm).
 // noCd = this hit ignores the short "can't be hit again" cooldown (every laser, spike... counts)
+const ENEMY_CAUSES = ['beamer', 'mine', 'basher', 'spike', 'maw'];
 function hurt(dmg, cause, small = false, noCd = false) {
+  if (S.sector && ENEMY_CAUSES.includes(cause)) dmg *= diff().dmg;   // (enemies hit softer / harder on easier / harder difficulties)
   if (S.mode !== 'play' || (world && world.won)) return;   // (already won: nothing can hurt you any more)
   if (!small && !noCd) { if (S.hurtT > 0) return; S.hurtT = CFG.hitCooldown; }
   S.hp = Math.max(0, S.hp - dmg);
@@ -5267,6 +5276,13 @@ function podiumCorrupted(p) {
   explode(p.x, p.y - 14, 'red', 1.3);                       // the last of the blue blows away
   burstParticles(p.x, p.y, 60, 1.8, CORRUPT_COLS);
   SFX.corrupted();
+  // ...and its blast DESTROYS every enemy within CFG.podiumBlast (dark ones too)
+  const near = e => Math.hypot(e.x - p.x, e.y - p.y) < CFG.podiumBlast;
+  for (const b of world.beamers) if (!b.dead && near(b)) { b.dead = true; b.deadT = 0; explode(b.x, b.y, 'red', 0.8 + b.kind * 0.3, false); }
+  for (const b of world.bashers) if (!b.dead && near(b)) { b.dead = true; explode(b.x, b.y, 'red', 1, false); }
+  for (const m of world.maws) if (m.state !== 'dying' && near(m)) { m.state = 'dying'; m.t = 0; }
+  for (const m of world.mines) if (!m.gone && near(m)) { m.gone = true; explode(m.x, m.y, 'red', 0.7, false); }
+  world.podRing = { x: p.x, y: p.y, t: S.t };
   const left = world.podiums.length - world.delivered;
 
 }
@@ -5557,6 +5573,14 @@ function drawPodiumSpots(camX, camY) {
 }
 function drawPodiums(camX, camY) {
   drawPodiumSpots(camX, camY);
+  // the CORRUPTION BLAST: a red ring racing out to CFG.podiumBlast when a podium is fully corrupted
+  const pr = world.podRing, pu = pr ? (S.t - pr.t) / 0.6 : 1;
+  if (pu < 1) {
+    const r = CFG.podiumBlast * (1 - Math.pow(1 - pu, 3));
+    g.globalAlpha = 1 - pu;
+    for (const [rr2, col, sz] of [[r, '#ff0000', 3], [r * 0.8, '#fff', 1]]) { g.fillStyle = col; for (let i = 0; i < 140; i++) { const a = i / 140 * 6.2832; g.fillRect(Math.round(pr.x - camX + Math.cos(a) * rr2), Math.round(pr.y - camY + Math.sin(a) * rr2), sz, sz); } }
+    g.globalAlpha = 1;
+  }
   // THE ALARM: a ring racing out from a podium you just tore a shard off (as far as enemies hear it)
   const al = world.alarm, au = al ? (S.t - al.t) / 0.8 : 1;
   if (au < 1) {
@@ -6105,7 +6129,7 @@ function drawPurifyHUD(k, late) {
     const y = 52 - slide * 48, gl = b < 0.6 ? 0.6 : 0.06;   // (just under the HUD panels)
     g.globalAlpha = fade;
     const rn = S.reality ? S.reality.name : '', idx = S.reality ? S.reality.sectors.indexOf(S.sector) + 1 : 1;
-    text('REALITY: ' + rn + '   -   SECTOR ' + idx, W / 2, y, 1, '#8c8c96', gl * 0.5, 'center');
+    text('REALITY: ' + rn + '   -   SECTOR ' + idx + '   -   ' + diff().name, W / 2, y, 1, '#8c8c96', gl * 0.5, 'center');
     text(areaName(), W / 2, y + 11, 3, '#fff', gl, 'center');
     g.fillStyle = '#ff0000'; const lw = textWidth(areaName(), 3) * Math.min(1, b * 2); g.fillRect(Math.round(W / 2 - lw / 2), y + 35, Math.round(lw), 1);
     g.globalAlpha = 1;
@@ -6380,7 +6404,8 @@ function updateBeamers(dt) {
       b.podRel[i] += clamp(want - b.podRel[i], -6 * dt, 6 * dt);
     });
     // move (a bit floaty)
-    if (b.dark) speed *= 1.4;                                 // (dark: faster)
+    if (b.dark) speed *= CFG.darkSpeed;                       // (dark: faster)
+    speed *= diff().speed;                                    // (the difficulty)
     let vx = Math.cos(b.state === 'wander' ? b.wa : b.ang) * speed, vy = Math.sin(b.state === 'wander' ? b.wa : b.ang) * speed;
     // keep out of The Anchor's light, apart from each other, and inside the map
     const ad = Math.hypot(b.x, b.y);
@@ -6436,7 +6461,7 @@ function beamHits(b) {
       explode(b.x, b.y, 'mix', 0.7 + b.kind * 0.3, false);
       SFX.reflect(); SFX.beamerExplode(clamp((b.x - player.x) / 200, -1, 1), b.kind);
       shieldBlock();
-    } else hurt(K.dmg + (b.dark ? 5 : 0), 'beamer', false, true);
+    } else hurt(K.dmg + (b.dark ? CFG.darkDmg : 0), 'beamer', false, true);
   });
 }
 
@@ -6546,7 +6571,7 @@ function drawBeams(camX, camY) {
           }
           g.globalAlpha = 1;
         }
-        const fat = b.dark ? 1.4 : 1, pal = b.dark ? DARK_BEAM : BEAM_PAL;   // (the beam's bright middle)
+        const fat = b.dark ? 1.2 : 1, pal = b.dark ? DARK_BEAM : BEAM_PAL;   // (the beam's bright middle)
         for (const [w, col] of [[(5 * f + 2) * fat, pal.out], [2 * fat, pal.mid], [1 * Math.ceil(fat), pal.core]]) {
           g.strokeStyle = col; g.lineWidth = w; g.beginPath(); g.moveTo(x0, y0);
           for (let k = 1; k <= 6; k++) { const u = k / 6; g.lineTo(lerp(x0, x1, u) + (k < 6 ? rr(-1.5, 1.5) : 0), lerp(y0, y1, u) + (k < 6 ? rr(-1.5, 1.5) : 0)); }
@@ -6692,17 +6717,18 @@ function segT(px, py, ax, ay, bx, by) { const dx = bx - ax, dy = by - ay, l2 = d
 function updateMines(dt) {
   for (const m of world.mines) {
     m.t += dt;
-    const d = Math.hypot(player.x - m.x, player.y - m.y), range = CFG.mineRange + (m.dark ? 15 : 0);   // (a DARK mine goes off from further away)
+    const d = Math.hypot(player.x - m.x, player.y - m.y), range = CFG.mineRange + (m.dark ? CFG.darkMineRange : 0);   // (a DARK mine goes off from further away)
     m.near = clamp(1 - (d - range) / 90, 0, 1);
     if (m.arm > 0) { m.arm -= dt; continue; }               // (just turned normal: re-arming)       // (it blinks faster as you come close)
     if (m.near > 0.15) { m.beepT = (m.beepT || 0) - dt; if (m.beepT <= 0) { m.beepT = 0.7 - m.near * 0.55; SFX.mineBeep(m.near, clamp((m.x - player.x) / 200, -1, 1)); } }   // ticking faster as you come close
     if (m.chain !== undefined) { m.chain -= dt; if (m.chain <= 0) { mineShot(m); continue; } }   // (set off by a blast next to it)
+    if (m.quiet !== undefined) { m.quiet -= dt; if (m.quiet <= 0) { quietBlast(m); continue; } }   // (set off by a mine next to it: harmless to you)
     if (d < range) mineBlast(m);
   }
   world.mines = world.mines.filter(m => !m.gone);
 }
 function mineBlast(m) {
-  const dmg = CFG.mineDamage + (m.dark ? 10 : 0);       // (a dark mine hits 10 harder)
+  const dmg = CFG.mineDamage + (m.dark ? CFG.darkMineDmg : 0);   // (a dark mine hits harder)
   if (m.dark) { m.dark = false; m.arm = 2; explode(m.x, m.y, 'dark', 1); } else m.gone = true;   // a dark mine only turns NORMAL (and re-arms)
   explode(m.x, m.y, 'pure', 1.4, false);                  // (its own sound, not the usual boom)
   SFX.mineBlast();
@@ -6710,6 +6736,18 @@ function mineBlast(m) {
   if (s && !s.pure && !s.anim) { s.pure = true; s.charges = 0; }
   for (const q of world.shards) if (q.state === 'free' && !q.pure && Math.hypot(q.x - m.x, q.y - m.y) < CFG.mineBlast) { q.pure = true; q.charges = 0; }
   if (!S.shield) hurt(dmg, 'mine', false, true);
+  chainMines(m);
+}
+// CHAIN REACTION: a mine going off sets off every other mine within
+// CFG.mineChain, one after another — but those DON'T hurt you or purify your
+// shard (you already took the first one). They do keep the chain going.
+function chainMines(m) {
+  for (const o of world.mines) if (o !== m && !o.gone && o.quiet === undefined && o.chain === undefined && !(o.arm > 0) && Math.hypot(o.x - m.x, o.y - m.y) < CFG.mineChain) o.quiet = rr(0.1, 0.18);
+}
+function quietBlast(m) {
+  delete m.quiet;
+  if (m.dark) { m.dark = false; m.arm = 2; explode(m.x, m.y, 'dark', 0.9); } else { m.gone = true; explode(m.x, m.y, 'pure', 1.1, false); SFX.mineBlast(); }
+  chainMines(m);
 }
 // TRICK SHOT: a Beamer's laser hits a mine (lure one so a mine is between
 // you). The mine goes off in a much BIGGER blast that destroys every enemy
@@ -6717,7 +6755,7 @@ function mineBlast(m) {
 // destroyed by their own purification, not corrupted.
 // (You only get hurt / your shard purified if you're inside the normal blast.)
 function mineShot(m) {
-  const dmg = CFG.mineDamage + (m.dark ? 10 : 0);
+  const dmg = CFG.mineDamage + (m.dark ? CFG.darkMineDmg : 0);
   if (m.dark) { m.dark = false; m.arm = 2; delete m.chain; explode(m.x, m.y, 'dark', 1); } else m.gone = true;
   explode(m.x, m.y, 'pure', 2.2, false); SFX.mineBlast();
   S.shake = Math.max(S.shake, 8);
@@ -6751,7 +6789,7 @@ function drawMines(camX, camY) {
     }
     // its danger ring: a faint circle of dots that turns white when you're close
     g.globalAlpha = 0.25 + m.near * 0.6; g.fillStyle = m.near > 0.6 && blink ? '#fff' : '#6e96ff';
-    const mr = CFG.mineRange + (m.dark ? 15 : 0); if (m.dark) g.fillStyle = m.near > 0.6 && blink ? '#fff' : '#c040ff';
+    const mr = CFG.mineRange + (m.dark ? CFG.darkMineRange : 0); if (m.dark) g.fillStyle = m.near > 0.6 && blink ? '#fff' : '#c040ff';
     for (let i = 0; i < 28; i++) { if ((i + Math.floor(m.t * 6)) % 3 === 0) continue; const a = i / 28 * 6.2832 + m.t * 0.3; g.fillRect(Math.round(x + Math.cos(a) * mr), Math.round(y + Math.sin(a) * mr), 1, 1); }
     g.globalAlpha = 1;
     // the spikes (6, slowly turning) and the core
@@ -6786,7 +6824,7 @@ function updateBashers(dt) {
       if (b.hunt > 0) { b.hunt -= dt; b.wa = toP; }        // ALERTED (a shard was torn off nearby): it comes for you
       else if (b.home && Math.hypot(b.x - b.home.x, b.y - b.home.y) > CFG.guardRange) b.wa = Math.atan2(b.home.y - b.y, b.home.x - b.x);   // GUARDING: back toward its podium
       else if (b.t > b.next) { b.wa += rr(-1.5, 1.5); b.next = b.t + rr(2, 4); }
-      const sp = (b.hunt > 0 ? 75 : 22) * (b.dark ? 1.4 : 1);
+      const sp = (b.hunt > 0 ? 75 : 22) * (b.dark ? CFG.darkSpeed : 1) * diff().speed;
       vx = Math.cos(b.wa) * sp; vy = Math.sin(b.wa) * sp; b.ang = b.wa;
       if (d < CFG.basherSight && !safeP) { b.state = 'windup'; b.t = 0; SFX.basherWind(clamp(-dx / 200, -1, 1)); }
     } else if (b.state === 'windup') {
@@ -6794,7 +6832,7 @@ function updateBashers(dt) {
       vx = -Math.cos(b.ang) * 18; vy = -Math.sin(b.ang) * 18;            // (pulls back a little, like winding up a punch)
       if (b.t >= BASH.windup) { b.state = 'bash'; b.t = 0; b.hit = false; SFX.bash(clamp(-dx / 200, -1, 1)); explode(b.x - Math.cos(b.ang) * 6, b.y - Math.sin(b.ang) * 6, 'pure', 0.3, false); }   // (a burst of light as it launches)
     } else if (b.state === 'bash') {
-      const bs = BASH.speed * (b.dark ? 1.3 : 1);           // (dark: faster)
+      const bs = BASH.speed * (b.dark ? CFG.darkSpeed : 1) * diff().speed;   // (dark / harder: faster)
       vx = Math.cos(b.ang) * bs; vy = Math.sin(b.ang) * bs;
       if (rnd() < 0.7) b.ghosts.push({ x: b.x, y: b.y, life: 0.35 });
       if (rnd() < 0.8) { const a = b.ang + Math.PI + rr(-0.5, 0.5); particles.push({ x: b.x + rr(-4, 4), y: b.y + rr(-4, 4), vx: Math.cos(a) * rr(40, 120), vy: Math.sin(a) * rr(40, 120), life: 0.35, max: 0.35, col: rnd() < 0.4 ? '#fff' : '#8a6cff', s: 1, streak: true }); }   // sparks spraying off behind it
@@ -6839,7 +6877,7 @@ function basherHits(b) {
     if (s && !s.anim && !s.split && s.half === undefined) splitShard(s, b.ang);
     else shieldBlock();
   } else {
-    hurt(CFG.basherDamage + (b.dark ? 5 : 0), 'basher', false, true);
+    hurt(CFG.basherDamage + (b.dark ? CFG.darkDmg : 0), 'basher', false, true);
     S.shake = Math.max(S.shake, 9);
     // KNOCKED AWAY: you fly off the way the Basher was going (you can't steer for a moment)
     player.dashT = 0; player.vx = Math.cos(b.ang) * CFG.basherKnock; player.vy = Math.sin(b.ang) * CFG.basherKnock; S.launchT = 0.3;
@@ -6944,7 +6982,7 @@ function updateMaws(dt) {
       if (d < CFG.mawSight) { m.state = 'track'; m.t = 0; }
     } else if (m.state === 'track') {
       m.ang += clamp(angDiff(m.ang, toP), -2 * dt, 2 * dt);
-      if (d > CFG.mawRange * 0.8) { const ms = m.dark ? 34 : 24; vx = Math.cos(toP) * ms; vy = Math.sin(toP) * ms; }
+      if (d > CFG.mawRange * 0.8) { const ms = 24 * (m.dark ? CFG.darkSpeed : 1) * diff().speed; vx = Math.cos(toP) * ms; vy = Math.sin(toP) * ms; }
       if (d > CFG.mawSight * 1.5) { m.state = 'idle'; m.t = 0; }
       else if (d < CFG.mawRange && Math.abs(angDiff(m.ang, toP)) < 0.3) { m.state = 'open'; m.t = 0; SFX.mawOpen(clamp(-dx / 250, -1, 1)); }
     } else if (m.state === 'open') {
@@ -7007,8 +7045,8 @@ function mawTouch(m, dt) {
     if (m.blockT <= 0) { m.blockT = 1; shieldBlock(); SFX.reflect(); burstParticles(player.x, player.y, 20, 1, PURE_COLS); }
     return;
   }
-  m.touch += (CFG.mawDps + (m.dark ? 5 : 0)) * dt;
-  const dps = CFG.mawDps + (m.dark ? 5 : 0);
+  m.touch += (CFG.mawDps + (m.dark ? CFG.darkDmg : 0)) * dt;
+  const dps = CFG.mawDps + (m.dark ? CFG.darkDmg : 0);
   while (m.touch >= dps / 4) { m.touch -= dps / 4; hurt(dps / 4, 'maw', true); if (S.mode !== 'play') return; }
 }
 function drawMaws(camX, camY) {
@@ -7098,21 +7136,22 @@ function addEnemies(w, R, E) {
     return null;
   };
   w.mines = []; w.bashers = []; w.maws = [];
-  const nMines = Array.isArray(E.mines) ? E.mines[0] + Math.floor(R() * (E.mines[1] - E.mines[0] + 1)) : (E.mines || 0);   // (mines: [from, to])
-  // mines come in CLUMPS of 3-5: most clumps guard a podium, some are scattered
-  // — and in sectors with minesInBlobs, many hide INSIDE the Purification
+  const MR = diffCount(E.mines), nMines = Array.isArray(MR) ? MR[0] + Math.floor(R() * (MR[1] - MR[0] + 1)) : MR;   // (mines: [from, to], scaled by the difficulty)
+  // mines guard the podiums, some are scattered — in sectors with minesInBlobs
+  // many hide INSIDE the Purification. Only sectors with mineClumps (PURE SEAS)
+  // put them in CLUMPS of 3-5; everywhere else they come one by one.
   const okMine = (x, y) => Math.hypot(x, y) > CFG.beamerSafe + 40 && Math.hypot(x, y) < edgeRadiusAt(w.edge, Math.atan2(y, x)) - 120 && !w.podiums.some(p => Math.hypot(p.x - x, p.y - y) < 80);
-  for (let ci = 0; w.mines.length < nMines && ci < 80; ci++) {
+  for (let ci = 0; w.mines.length < nMines && ci < 400; ci++) {
     let c = null;
-    if (E.minesInDanger && w.danger && w.danger.length && R() < 0.4) {
+    if (E.minesInDanger && w.danger && w.danger.length && R() < 0.1 * w.danger.length) {   // (more Dangerblobs = more dark mines)
       const d = w.danger[Math.floor(R() * w.danger.length)], a = R() * 6.283, dd = R() * d.r * 0.5;
       c = [d.x + Math.cos(a) * dd, d.y + Math.sin(a) * dd];
     } else if (E.minesInBlobs && w.nulls.length && R() < 0.6) {
       const n = w.nulls[Math.floor(R() * w.nulls.length)], a = R() * 6.283, d = R() * n.r * 0.6;
       c = [n.x + Math.cos(a) * d, n.y + Math.sin(a) * d];
     } else c = (ci % 3 !== 2 && guardSpot(w, R, ci, 110, 210, [], 0)) || spot(300, 0, []);
-    if (!c || !okMine(c[0], c[1]) || w.mines.some(m => Math.hypot(m.x - c[0], m.y - c[1]) < 90)) continue;
-    const size = 3 + Math.floor(R() * 3);
+    if (!c || !okMine(c[0], c[1]) || w.mines.some(m => Math.hypot(m.x - c[0], m.y - c[1]) < (E.mineClumps ? 90 : 60))) continue;
+    const size = E.mineClumps ? 3 + Math.floor(R() * 3) : 1;
     for (let j = 0; j < size && w.mines.length < nMines; j++) {
       for (let tries = 0; tries < 20; tries++) {
         const a = R() * 6.283, d = j ? 20 + R() * 30 : 0, x = c[0] + Math.cos(a) * d, y = c[1] + Math.sin(a) * d;
@@ -7121,8 +7160,8 @@ function addEnemies(w, R, E) {
       }
     }
   }
-  for (let i = 0; i < (E.bashers || 0); i++) { const p = guardSpot(w, R, i * 2 + 1, 150, 260, w.bashers, 120) || spot(560, 300, w.bashers); if (p) w.bashers.push({ x: p[0], y: p[1], home: p[2] || null, vx: 0, vy: 0, ang: 0, wa: R() * 6.283, r: 11, state: 'wander', t: 0, next: 0, id: i, ghosts: [], tail: Array.from({ length: 9 }, () => ({ x: p[0], y: p[1] })) }); }
-  for (let i = 0; i < (E.maws || 0); i++) { const p = spot(520, 500, w.maws); if (p) w.maws.push({ x: p[0], y: p[1], ang: 0, wa: R() * 6.283, r: 24, state: 'idle', t: 0, next: 0, fin: R() * 6, id: i, bolt: null }); }
+  for (let i = 0; i < diffCount(E.bashers); i++) { const p = guardSpot(w, R, i * 2 + 1, 150, 260, w.bashers, 120) || spot(560, 300, w.bashers); if (p) w.bashers.push({ x: p[0], y: p[1], home: p[2] || null, vx: 0, vy: 0, ang: 0, wa: R() * 6.283, r: 11, state: 'wander', t: 0, next: 0, id: i, ghosts: [], tail: Array.from({ length: 9 }, () => ({ x: p[0], y: p[1] })) }); }
+  for (let i = 0; i < diffCount(E.maws); i++) { const p = spot(520, 500, w.maws); if (p) w.maws.push({ x: p[0], y: p[1], ang: 0, wa: R() * 6.283, r: 24, state: 'idle', t: 0, next: 0, fin: R() * 6, id: i, bolt: null }); }
 }
 </script>
 <script>
@@ -7133,10 +7172,10 @@ function addEnemies(w, R, E) {
 //  DANGERBLOBS: pools of dark purple scattered over the map.
 //   - YOU in one: CFG.dangerDps damage per second
 //   - an ENEMY that touches one turns DARK: dark purple, with purple sparks
-//     swirling around it, +5 damage and faster. Dark Beamers fire FATTER
+//     and orbs swirling around it, a bit more damage and a bit faster (CFG.dark...). Dark Beamers fire FATTER
 //     beams, dark Bashers grow longer spikes and leave a trail of purple
 //     SLIME (it slows you; each blob lasts CFG.slimeLife seconds), dark mines
-//     hit even harder (+10) from further away.
+//     hit harder from a bit further away.
 //   - killing a dark enemy only turns it NORMAL again (tryKill) — then you
 //     have to kill it a second time. (If it touches a Dangerblob again, it
 //     turns dark again.)
@@ -7147,7 +7186,8 @@ const DARK = { revive: 1.5 };                              // after turning norm
 
 function addDangerBlobs(w, R, D) {
   w.danger = []; w.slime = [];
-  for (let k = 0; k < 3000 && w.danger.length < D.count; k++) {
+  const count = Array.isArray(D.count) ? D.count[0] + Math.floor(R() * (D.count[1] - D.count[0] + 1)) : D.count;   // (count: [from, to])
+  for (let k = 0; k < 3000 && w.danger.length < count; k++) {
     const a = R() * 6.283, r = D.r[0] + R() * (D.r[1] - D.r[0]), d = 380 + Math.sqrt(R()) * (edgeRadiusAt(w.edge, a) - 600), x = Math.cos(a) * d, y = Math.sin(a) * d;
     if (Math.hypot(x, y) - r * 1.4 < CFG.beamerSafe + 30) continue;                        // never on The Anchor
     if (Math.hypot(x, y) + r * 1.4 > edgeRadiusAt(w.edge, a) - 80) continue;
@@ -8636,15 +8676,15 @@ const REALITIES = [
       rifts: false, tears: false, locators: false, portal: false, farRifts: false, farLightning: false,
       podiums: true, front: true,
       blobs: { count: 4, r: [230, 300], parts: [4, 6] },     // SEAS: HUGE lumpy blobs of Purification (each one several blobs melted together)
-      beamers: { single: 3, dual: 2, triple: 0 },
-      enemies: { mines: [16, 24], bashers: 4, maws: 0, minesInBlobs: true } },   // mines hide INSIDE the seas
+      beamers: { single: 2, dual: 1, triple: 0 },
+      enemies: { mines: [10, 16], bashers: 3, maws: 0, minesInBlobs: true, mineClumps: true } },   // (the only sector with mine CLUMPS)   // mines hide INSIDE the seas
     { name: 'DANGERBLOBS', open: true, shards: 8, icon: 'danger',
       rifts: false, tears: false, locators: false, portal: false, farRifts: false, farLightning: false,
       podiums: true, front: true,
       blobs: { count: 5, r: [80, 120], parts: [1, 2] },
-      dangerBlobs: { count: 9, r: [55, 95] },                 // dark purple pools: they hurt YOU, and turn enemies DARK (danger.js)
-      beamers: { single: 4, dual: 2, triple: 0 },
-      enemies: { mines: [16, 22], bashers: 5, maws: 0, minesInDanger: true } },
+      dangerBlobs: { count: [2, 5], r: [55, 95] },            // 2-5 of them                 // dark purple pools: they hurt YOU, and turn enemies DARK (danger.js)
+      beamers: { single: 3, dual: 1, triple: 0 },
+      enemies: { mines: [10, 16], bashers: 3, maws: 0, minesInDanger: true } },
     { name: '???', open: false },
     { name: '???', open: false },
   ] },
@@ -8662,13 +8702,24 @@ function beatenList() { try { return JSON.parse(localStorage.getItem('v0id3d_bea
 function markBeaten(name) { try { const b = beatenList(); if (!b.includes(name)) { b.push(name); localStorage.setItem('v0id3d_beaten', JSON.stringify(b)); } } catch {} }
 function cardOpen(it, i) {
   if (!it.open) return false;                              // (doesn't exist yet)
-  if (S.mode === 'realities' || TEST_VERSION || i === 0) return true;
+  if (S.mode === 'realities' || S.mode === 'difficulty' || TEST_VERSION || i === 0) return true;
   const prev = S.reality.sectors[i - 1];
   return !!prev && beatenList().includes(prev.name);
 }
+// DIFFICULTY (chosen after the reality): how many enemies (spawn), how hard
+// they hit (dmg) and how fast they move (speed), compared to NORMAL
+const DIFFICULTIES = [
+  { name: 'EASY',   open: true, spawn: 0.6,  dmg: 0.65, speed: 0.8,  col: '#6e96ff' },
+  { name: 'NORMAL', open: true, spawn: 1,    dmg: 1,    speed: 1,    col: '#c8c8d0' },
+  { name: 'HARD',   open: true, spawn: 1.35, dmg: 1.3,  speed: 1.15, col: '#ff6040' },
+  { name: 'BRUTAL', open: true, spawn: 1.7,  dmg: 1.6,  speed: 1.3,  col: '#ff0000' },
+];
+const diff = () => S.diff || DIFFICULTIES[1];
+// how many of something to spawn on this difficulty (rounded; a [from, to] range scales both ends)
+function diffCount(n) { if (Array.isArray(n)) return n.map(v => Math.round(v * diff().spawn)); return Math.round((n || 0) * diff().spawn); }
 // what the screens' headers say (and the "AREA 1" text in a level, now the sector's name)
 function areaName() { return S.sector ? S.sector.name : 'AREA ' + S.area; }
-const MENU_MODES = ['title', 'mission', 'tutask', 'realities', 'sectors', 'settings', 'soundtrack'];
+const MENU_MODES = ['title', 'mission', 'tutask', 'realities', 'difficulty', 'sectors', 'settings', 'soundtrack'];
 const inMenu = () => MENU_MODES.includes(S.mode);
 
 // =====================================================================
@@ -8741,12 +8792,13 @@ function drawMission() {
 // =====================================================================
 // (S.menuSel = -1: no card picked yet — none gets the red border until you hover it or press a key)
 function toRealities() { S.mode = 'realities'; S.menuSel = -1; S.menuShake = null; }
+function toDifficulty(r) { S.mode = 'difficulty'; S.reality = r; S.menuSel = -1; S.menuShake = null; }
 function toSectors(r) { S.mode = 'sectors'; S.reality = r; S.menuSel = -1; S.menuShake = null; }
 function startSector(sec) { S.sector = sec; startArea(1, sec.shards); }
-const menuList = () => S.mode === 'realities' ? REALITIES : S.reality.sectors;
+const menuList = () => S.mode === 'realities' ? REALITIES : S.mode === 'difficulty' ? DIFFICULTIES : S.reality.sectors;
 // where each card is on screen
 function menuCards() {
-  const list = menuList(), cw = S.mode === 'realities' ? 128 : 116, ch = 112, gap = S.mode === 'realities' ? 14 : 10;   // (5 sectors have to fit)
+  const four = S.mode !== 'sectors', list = menuList(), cw = four ? 128 : 116, ch = 112, gap = four ? 14 : 10;   // (5 sectors have to fit)
   const x0 = Math.round(W / 2 - (list.length * cw + (list.length - 1) * gap) / 2), y = Math.round(H / 2 - ch / 2 + 10);
   return list.map((it, i) => ({ it, i, x: x0 + i * (cw + gap), y, w: cw, h: ch }));
 }
@@ -8759,7 +8811,7 @@ function menuPick(i) {
   const it = menuList()[i]; if (!it) return;
   if (!cardOpen(it, i)) { SFX.denied(); S.menuShake = { i, t: 0.35 }; return; }       // locked: a "nope" and a shake
   SFX.menuPick();
-  if (S.mode === 'realities') toSectors(it); else startSector(it);
+  if (S.mode === 'realities') toDifficulty(it); else if (S.mode === 'difficulty') { S.diff = it; toSectors(S.reality); } else startSector(it);
 }
 function menuKey(key) {
   const n = menuList().length;
@@ -8767,7 +8819,7 @@ function menuKey(key) {
   if (key === 'arrowleft' || key === 'a') { S.menuSel = S.menuSel < 0 ? first : (S.menuSel - 1 + n) % n; SFX.menuMove(); }
   if (key === 'arrowright' || key === 'd') { S.menuSel = S.menuSel < 0 ? first : (S.menuSel + 1) % n; SFX.menuMove(); }
   if (key === 'enter' || key === ' ') { if (S.menuSel < 0) { S.menuSel = first; SFX.menuMove(); } else menuPick(S.menuSel); }
-  if (key === 'escape') { if (S.mode === 'sectors') toRealities(); else toTitle(); }
+  if (key === 'escape') { if (S.mode === 'sectors') toDifficulty(S.reality); else if (S.mode === 'difficulty') toRealities(); else toTitle(); }
 }
 function menuMouseMove() {
   const i = menuHover();
@@ -8804,6 +8856,16 @@ function sectorIconDanger(cx, cy, sel) {
   for (let k = 0; k < 4; k++) { const u = (S.t * 0.6 + k * 0.25) % 1; g.fillStyle = '#b040ff'; g.fillRect(Math.round(cx - 12 + k * 8), Math.round(cy + 8 - u * 10), 2, 2); }
   diamond(cx, cy - 6, 7, '#1a0628'); diamond(cx, cy - 6, 5, sel ? '#ff0000' : '#c040ff'); diamond(cx, cy - 6, 2, '#fff');
 }
+// a difficulty's picture: 1-4 red diamonds (BRUTAL's shake and glitch)
+function diffIcon(cx, cy, i, sel) {
+  const D = DIFFICULTIES[i], n = i + 1, sh = i === 3 ? 1.5 : 0;
+  glowAt(cx, cy, 14 + i * 6, 18, 0.25 + i * 0.12, i === 0 ? GLOW_BLUE : GLOW);
+  for (let k = 0; k < n; k++) {
+    const x = cx + (k - (n - 1) / 2) * 13 + rr(-sh, sh), y = cy + rr(-sh, sh);
+    diamond(Math.round(x), Math.round(y), 6, '#000'); diamond(Math.round(x), Math.round(y), 5, sel ? D.col : D.col); diamond(Math.round(x), Math.round(y), 1.5, '#fff');
+  }
+  if (i === 3 && rnd() < 0.15) { g.fillStyle = '#ff0000'; g.fillRect(Math.round(cx - 24 + rr(-4, 4)), Math.round(cy + rr(-8, 8)), 48, 1); }
+}
 // a little pixel PADLOCK (for locked cards)
 function padlock(cx, cy, col) {
   g.fillStyle = col;
@@ -8813,9 +8875,9 @@ function padlock(cx, cy, col) {
 }
 function drawMenu() {
   dim(0.55);
-  const reals = S.mode === 'realities';
-  text(reals ? 'CHOOSE A REALITY' : 'CHOOSE A SECTOR', W / 2, 34, 3, '#fff', 0.15, 'center');
-  text(reals ? 'WHERE WILL YOU BE SENT?' : 'REALITY: ' + S.reality.name, W / 2, 62, 1, '#ff0000', 0.05, 'center');
+  const reals = S.mode === 'realities', diffs = S.mode === 'difficulty';
+  text(reals ? 'CHOOSE A REALITY' : diffs ? 'CHOOSE A DIFFICULTY' : 'CHOOSE A SECTOR', W / 2, 34, 3, '#fff', 0.15, 'center');
+  text(reals ? 'WHERE WILL YOU BE SENT?' : 'REALITY: ' + S.reality.name + (diffs ? '' : '   -   ' + diff().name), W / 2, 62, 1, '#ff0000', 0.05, 'center');
   for (const c of menuCards()) {
     const sel = c.i === S.menuSel, open = cardOpen(c.it, c.i);
     const sh = S.menuShake && S.menuShake.i === c.i ? Math.round(Math.sin(S.menuShake.t * 60) * 3 * S.menuShake.t / 0.35) : 0;
@@ -8825,11 +8887,12 @@ function drawMenu() {
     g.fillStyle = open ? (sel ? '#ff0000' : '#3c3c42') : '#262626';   // (red only while it's picked/hovered)
     g.fillRect(x, y, c.w, 1); g.fillRect(x, y + c.h - 1, c.w, 1); g.fillRect(x, y, 1, c.h); g.fillRect(x + c.w - 1, y, 1, c.h);
     if (sel) bracket(x - 3, y - 3, c.w + 6, c.h + 6, 8, open ? '#fff' : '#3c3c42');
-    text((reals ? 'REALITY ' : 'SECTOR ') + (c.i + 1), x + c.w / 2, y + 8, 1, open ? '#8c8c96' : '#3c3c42', 0, 'center');
+    text((reals ? 'REALITY ' : diffs ? 'DIFFICULTY ' : 'SECTOR ') + (c.i + 1), x + c.w / 2, y + 8, 1, open ? '#8c8c96' : '#3c3c42', 0, 'center');
     if (open) {
       // a little Anchor (reality) / a ring of dots (sector) as the picture
       const cx = x + c.w / 2, cy = y + 52;
       if (reals) { glowAt(cx, cy, 22, 22, 0.5); diamond(cx, cy, 11, '#000'); diamond(cx, cy, 9, '#ff0000'); diamond(cx, cy, 4, '#fff'); }
+      else if (diffs) diffIcon(cx, cy, c.i, sel);
       else if (c.it.icon === 'podium') sectorIconPodium(cx, cy, sel);
       else if (c.it.icon === 'seas') sectorIconSeas(cx, cy, sel);
       else if (c.it.icon === 'danger') sectorIconDanger(cx, cy, sel);
@@ -8850,12 +8913,12 @@ function drawMenu() {
     }
   }
   text('A / D  SELECT      ENTER  CHOOSE      ESC  BACK', W / 2, H - 22, 1, '#8c8c96', 0.03, 'center');
-  if (TEST_VERSION && !reals) text('TEST VERSION: ALL SECTORS UNLOCKED', W / 2, 76, 1, '#5a5a64', 0, 'center');
+  if (TEST_VERSION && S.mode === 'sectors') text('TEST VERSION: ALL SECTORS UNLOCKED', W / 2, 76, 1, '#5a5a64', 0, 'center');
 }
 
 // the mouse pointer (the real one is hidden over the game) — only on the menus
 function drawCursor() {
-  if (!S.mouse || !S.mouse.on || !['title', 'tutask', 'softdead', 'realities', 'sectors', 'settings', 'soundtrack'].includes(S.mode) || (S.mode === 'title' && !AU.ctx)) return;
+  if (!S.mouse || !S.mouse.on || !['title', 'tutask', 'softdead', 'realities', 'difficulty', 'sectors', 'settings', 'soundtrack'].includes(S.mode) || (S.mode === 'title' && !AU.ctx)) return;
   const x = Math.round(S.mouse.x), y = Math.round(S.mouse.y);
   g.fillStyle = '#000';
   for (let i = 0; i < 9; i++) g.fillRect(x - 1, y + i - 1, Math.max(1, Math.min(i, 9 - i)) + 2, 3);   // a black outline...
@@ -9324,7 +9387,7 @@ function render() {
   if (S.mode === 'settings') drawSettings();
   if (S.mode === 'soundtrack') drawSoundtrack();
   if (S.mode === 'mission') { drawTitle(); drawMission(); }       // (the menu fading to black)
-  if (S.mode === 'realities' || S.mode === 'sectors') drawMenu();
+  if (S.mode === 'realities' || S.mode === 'difficulty' || S.mode === 'sectors') drawMenu();
   if (S.mode === 'tutask') drawTutAsk();
   drawCursor();
   if (S.mode === 'clear') drawClear();
@@ -9364,7 +9427,7 @@ addEventListener('keydown', e => {
   else if (S.mode === 'mission') missionNext();
   else if (S.mode === 'tutask') tutAskKey(key);
   else if (S.mode === 'softdead') softDeadKey(key);
-  else if (S.mode === 'realities' || S.mode === 'sectors') menuKey(key);
+  else if (S.mode === 'realities' || S.mode === 'difficulty' || S.mode === 'sectors') menuKey(key);
   else if (S.mode === 'play') {
     if (S.spawn && key !== 'escape' && key !== 'p') return;   // (arriving: wait a moment)
     if (S.cutscene && key !== 'escape' && key !== 'p') { cutsceneKey(key); if (key === 'tab') endTutorial(); return; }   // (a tutorial cutscene is playing)
@@ -9405,13 +9468,13 @@ addEventListener('mousedown', () => {
   else if (S.mode === 'settings') { const r = settingsRows().find(overRect); if (r) settingsPick(r.i); }
   else if (S.mode === 'soundtrack') { const r = soundtrackRows().find(overRect); if (r) soundtrackPick(r.i); }
   else if (S.mode === 'mission') missionNext();
-  else if (S.mode === 'realities' || S.mode === 'sectors') { const i = menuHover(); if (i >= 0) menuPick(i); }
+  else if (S.mode === 'realities' || S.mode === 'difficulty' || S.mode === 'sectors') { const i = menuHover(); if (i >= 0) menuPick(i); }
 });
 // where the mouse is, in GAME pixels (the canvas is scaled up and centred on the page)
 addEventListener('mousemove', e => {
   const r = cv.getBoundingClientRect();
   S.mouse = { x: (e.clientX - r.left) / r.width * W, y: (e.clientY - r.top) / r.height * H, on: true };
-  if (S.mode === 'realities' || S.mode === 'sectors') menuMouseMove();
+  if (S.mode === 'realities' || S.mode === 'difficulty' || S.mode === 'sectors') menuMouseMove();
   if (S.mode === 'tutask') { const b = tutAskBtns().find(overRect); if (b && b.i !== S.askSel) { S.askSel = b.i; SFX.menuMove(); } }
   if (S.mode === 'softdead') { const b = softDeadBtns().find(overRect); if (b && b.i !== S.askSel) { S.askSel = b.i; SFX.menuMove(); } }
   if (S.mode === 'settings') { const r = settingsRows().find(overRect); if (r && r.i !== S.setSel) { S.setSel = r.i; SFX.menuMove(); } }
