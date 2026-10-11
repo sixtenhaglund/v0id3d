@@ -129,7 +129,7 @@ const CFG = {
 //  reloads into the new version. build-site.js stamps a real number in here
 //  for the website; 'dev' (your own copy) never checks.
 // =====================================================================
-const BUILD_ID = '20261011123157';
+const BUILD_ID = '20261011124105';
 // THE PUBLIC LOCK: true = the website/app won't start, it just says
 // "NO IVAR. NO." (your own 'dev' copy always plays). false = everyone can play.
 const PUBLIC_LOCKED = false;
@@ -1272,7 +1272,7 @@ const SFX = {
   // crackles coming faster and faster... and then CORRUPTED: a heavy boom
   corrupt() {
     const ctx = AU.ctx; if (!ctx) return;
-    const t = ctx.currentTime, d = CORRUPT_TIME;
+    const t = ctx.currentTime, d = CORRUPT_TIME * diff().corrupt;
     const o = ctx.createOscillator(), o2 = ctx.createOscillator(), lp = ctx.createBiquadFilter(), gn = ctx.createGain();
     o.type = 'sawtooth'; o.frequency.setValueAtTime(55, t); o.frequency.exponentialRampToValueAtTime(220, t + d);
     o2.type = 'square'; o2.frequency.setValueAtTime(56.5, t); o2.frequency.exponentialRampToValueAtTime(227, t + d);
@@ -1319,7 +1319,7 @@ const SFX = {
     bell(3136, 0.05, 1.6, -0.3, 0.05); bell(2637, 0.05, 1.6, 0.3, 0.1);
   },
   // a mine close by: a soft "tik" that gets faster as you come closer
-  mineBeep(k, pan) { blip([1760 + k * 880], 0.035, 0.12 + k * 0.18, 'square', pan); blip([880 + k * 440], 0.035, 0.06 + k * 0.08, 'sine', pan); },
+  mineBeep(k, pan) { blip([1760 + k * 880], 0.035, 0.05 + k * 0.07, 'square', pan); blip([880 + k * 440], 0.035, 0.03 + k * 0.04, 'sine', pan); },
   basherWind(pan) { swoop(BASH.windup, 120, 4, 'sawtooth', 1200, 0.05, pan); burst(BASH.windup, 0.08, 800, 2, true, pan, 3000); },
   bash(pan) { burst(0.3, 0.3, 1500, 0.7, false, pan, 300); thump(0.4, 180, 60, 0.2); },
   basherBreak() { for (let i = 0; i < 8; i++) blip([rr(1500, 4000)], 0.02, 0.03, 'square', rr(-1, 1), i * 0.02); },
@@ -1505,7 +1505,7 @@ function audioUpdate(k, humVol, humPan, scream, musicVol) {
   AU.drone.gain.setTargetAtTime(0.085 + k * 0.1, t, 0.3);
   AU.droneLP.frequency.setTargetAtTime(160 + k * 900, t, 0.3);
   AU.dro[1].frequency.setTargetAtTime(49.5 + k * 6 + (k > 0.3 ? rr(-3, 3) * k : 0), t, 0.1);
-  AU.stat.gain.setTargetAtTime(0.006 + k * k * 0.16, t, 0.2);
+  AU.stat.gain.setTargetAtTime(S.sector ? 0 : 0.006 + k * k * 0.16, t, 0.2);   // (the static hiss: silent in sectors)
   AU.statBP.frequency.setTargetAtTime(1200 + rr(-400, 400) * k, t, 0.05);
   AU.hum.gain.setTargetAtTime(humVol * 0.18, t, 0.08);
   AU.humPan.pan.setTargetAtTime(humPan, t, 0.08);
@@ -2410,7 +2410,14 @@ function startArea(area, n) {
   S.lastSec = Math.ceil(S.time); S.lastHalf = Math.ceil(S.time * 2); S.rewinding = false;
 }
 // after the level-complete cutscene: back to choosing a reality (or, in the old endless mode, the next area)
-function afterClear() { if (S.sector) { toTitle(); toRealities(); } else nextArea(); }
+// after the level-complete ending: straight on to the NEXT sector of this
+// reality (if there is one) — the last one takes you back to choosing a reality
+function afterClear() {
+  if (!S.sector) return nextArea();
+  const list = S.reality ? S.reality.sectors : [], next = list[list.indexOf(S.sector) + 1];
+  if (next && next.open) { startSector(next); S.fadeIn = 1; }
+  else { toTitle(); toRealities(); }
+}
 function newRun() { startArea(1, CFG.firstShards); }
 function nextArea() { startArea(S.area + 1, S.shardCount + ri(CFG.moreShardsMin, CFG.moreShardsMax)); }
 function toTitle(quit = false) {
@@ -2787,11 +2794,11 @@ function update(dt) {
   // (never once The Portal has taken you — from there on it's calm)
   const taken = S.mode === 'warping' || S.mode === 'beyond' || S.mode === 'stars';
   S.gb -= dt;
-  if (S.mode !== 'paused' && !taken && S.gb <= 0 && rnd() < (0.25 * (1 - S.pure) + k * 3) * (1 - (S.stab || 0)) * dt) {
+  if (S.mode !== 'paused' && !taken && !S.sector && S.gb <= 0 && rnd() < (0.25 * (1 - S.pure) + k * 3) * (1 - (S.stab || 0)) * dt) {
     S.gb = rr(0.05, 0.18 + k * 0.3);
     if (!inMenu()) SFX.glitch(k);
   }
-  if (S.mode === 'play') {
+  if (S.mode === 'play' && !S.sector) {               // (none of this in a sector: no glitch noises there)
     // extra glitch sounds on their own random timer — more as reality breaks
     if (rnd() < (0.9 + k * 4) * (1 - S.pure) * dt) SFX.glitch(k * 0.8);
     // and a constant fine crackle, like a broken speaker
@@ -2947,7 +2954,8 @@ function updatePlay(dt, k) {
   if (ix || iy) { player.fx = ix / il; player.fy = iy / il; }   // remember which way you're facing
   const slimed = world.slime && inSlime(player.x, player.y);   // (a dark Basher's slime: danger.js)
   const slow = (1 - S.pure * 0.65) * (S.shield ? CFG.shieldSlow : 1) * (slimed ? CFG.slimeSlow : 1);   // near The Portal you get slower and slower... (and with your shield up)
-  const tvx = ix / il * CFG.playerSpeed * slow, tvy = iy / il * CFG.playerSpeed * slow;
+  const ps = CFG.playerSpeed * (S.sector ? diff().you : 1);   // (you're a bit faster on easier difficulties)
+  const tvx = ix / il * ps * slow, tvy = iy / il * ps * slow;
   // IN THE PURIFICATION it's slippery: you speed up and slow down much more slowly (like on ice)
   const inPure = world.opt.podiums && !!insideNull(player.x, player.y);
   const acc = 1 - Math.exp(-dt * (inPure ? CFG.pureSlip : 12));
@@ -5258,7 +5266,7 @@ function alertEnemies(x, y) {
   if (any) { SFX.beamerAlert(0); }
 }
 // put back on its podium, the red shard starts CORRUPTING it: for
-// CFG.podiumCorruptTime seconds the red eats into the blue — bolt by bolt,
+// podCorruptTime() seconds the red eats into the blue — bolt by bolt,
 // rift by rift — and only then is the whole podium corrupted
 function placeShard(s, p) {
   player.held = null;
@@ -5311,7 +5319,7 @@ function updatePurify(dt) {
     if (p.state !== 'pure') continue;
     const before = p.breakT || 0;
     p.breakT = p === tp ? before + dt : Math.max(0, before - dt * CFG.tearHeal);      // (let go and it SLOWLY heals)
-    const n = p.tethers.length, k = p.breakT / CFG.breakTime, pan = clamp((p.x - player.x) / 200, -1, 1);
+    const n = p.tethers.length, k = p.breakT / tearTime(), pan = clamp((p.x - player.x) / 200, -1, 1);
     if (p === tp) {
       // STRAINING: crackling that gets faster and higher, the screen shaking,
       // sparks flying off the bolts
@@ -5321,26 +5329,26 @@ function updatePurify(dt) {
       if (rnd() < dt * (20 + k * 70)) { const tt = p.tethers[ri(0, n - 1)], u = rnd(); particles.push({ x: p.x + tt.x * (1 - u), y: p.y + tt.y * (1 - u) - 14 * u, vx: rr(-40, 40), vy: rr(-40, 40), life: 0.4, max: 0.4, col: rnd() < 0.5 ? '#fff' : '#8a6cff', s: 1, streak: true }); }
     }
     for (let j = 0; j < n; j++) {                          // each bolt SNAPS at its own moment (with a little blast)
-      const at = (j + 1) / (n + 1) * CFG.breakTime;
+      const at = (j + 1) / (n + 1) * tearTime();
       if (p.breakT < at) p.tethers[j].snapT = 0;            // (healed back: that bolt is whole again)
       if (before < at && p.breakT >= at) { p.tethers[j].snapT = S.t; SFX.snap(pan); explode(p.x + p.tethers[j].x, p.y + p.tethers[j].y, 'pure', 0.35, false); }
     }
-    if (p.breakT >= CFG.breakTime) tearShard(p);
+    if (p.breakT >= tearTime()) tearShard(p);
   }
   // CORRUPTING podiums: the red slowly eats the blue. Each bolt turns red at
   // its own moment (with a crack); at the end the whole podium is corrupted
   for (const p of world.podiums) {
     if (p.state !== 'corrupting') continue;
     const before = p.corruptT; p.corruptT += dt;
-    const c = p.corruptT / CFG.podiumCorruptTime, n = p.tethers.length, pan = clamp((p.x - player.x) / 200, -1, 1), close = Math.hypot(p.x - player.x, p.y - player.y) < 400;
+    const c = p.corruptT / podCorruptTime(), n = p.tethers.length, pan = clamp((p.x - player.x) / 200, -1, 1), close = Math.hypot(p.x - player.x, p.y - player.y) < 400;
     for (let j = 0; j < n; j++) {
-      const at = (j + 1) / (n + 1) * CFG.podiumCorruptTime;
+      const at = (j + 1) / (n + 1) * podCorruptTime();
       if (before < at && p.corruptT >= at) { if (close) SFX.snap(pan); explode(p.x + p.tethers[j].x, p.y + p.tethers[j].y, 'mix', 0.35, false); }
     }
     p.crackT = (p.crackT || 0) - dt;
     if (p.crackT <= 0 && close) { p.crackT = rr(0.12, 0.35) * (1 - c * 0.6); SFX.crackle(c * 0.7, pan); }
     if (rnd() < dt * (10 + c * 40)) { const a = rnd() * 6.283, r = rr(4, 16); particles.push({ x: p.x + Math.cos(a) * r, y: p.y - 14 + Math.sin(a) * r, vx: Math.cos(a) * rr(20, 60), vy: Math.sin(a) * rr(20, 60), life: 0.5, max: 0.5, col: rnd() < 0.5 ? '#ff0000' : rnd() < 0.5 ? '#8a6cff' : '#fff', s: 1, streak: true }); }
-    if (p.corruptT >= CFG.podiumCorruptTime) podiumCorrupted(p);
+    if (p.corruptT >= podCorruptTime()) podiumCorrupted(p);
   }
   // close to The Anchor you HEAL slowly (1 HP every 2 seconds), with little red sparks rising off you
   if (nearAnchor() && S.hp < CFG.maxHp) {
@@ -5371,7 +5379,7 @@ function updatePurify(dt) {
       s.cx = lerp(A.x0, 0, e); s.cy = lerp(A.y0, CORRUPT_HOVER, e) - Math.sin(u * Math.PI) * 20;
       if (u >= 1) { A.phase = 'charge'; A.t = 0; SFX.corrupt(); }
     } else if (A.phase === 'charge') {
-      A.c = Math.min(1, A.t / CORRUPT_TIME);
+      A.c = Math.min(1, A.t / (CORRUPT_TIME * diff().corrupt));   // (slower on harder difficulties)
       const sh = A.c * 2.5;
       s.cx = rr(-sh, sh); s.cy = CORRUPT_HOVER + Math.sin(A.t * 3) * 2 + rr(-sh, sh);
       if (rnd() < dt * (2 + A.c * 10)) world.anchorPulse = Math.max(world.anchorPulse, 0.5 + A.c * 0.5);
@@ -5566,7 +5574,7 @@ function drawPodiumSpots(camX, camY) {
   for (const p of world.podiums) {
     const x = Math.round(p.x - camX), y = Math.round(p.y - camY);
     if (x < -100 || x > W + 100 || y < -100 || y > H + 100) continue;
-    const c = p.state === 'corrupt' ? 1 : p.state === 'corrupting' ? p.corruptT / CFG.podiumCorruptTime : 0;
+    const c = p.state === 'corrupt' ? 1 : p.state === 'corrupting' ? p.corruptT / podCorruptTime() : 0;
     if (c < 1) g.drawImage(SPOT_BLUE, x - 88, y - 94);
     if (c > 0) { g.globalAlpha = c; g.drawImage(SPOT_RED, x - 88, y - 94); g.globalAlpha = 1; }
   }
@@ -5594,9 +5602,9 @@ function drawPodiums(camX, camY) {
   for (const p of world.podiums) {
     const x = Math.round(p.x - camX), y = Math.round(p.y - camY);
     if (x < -70 || x > W + 70 || y < -90 || y > H + 50) continue;
-    const red = p.state === 'corrupt', ing = p.state === 'corrupting', cc = ing ? clamp(p.corruptT / CFG.podiumCorruptTime, 0, 1) : red ? 1 : 0;
+    const red = p.state === 'corrupt', ing = p.state === 'corrupting', cc = ing ? clamp(p.corruptT / podCorruptTime(), 0, 1) : red ? 1 : 0;
     const lit = red ? Math.min(1, (S.t - p.fillT) * 2) : ing ? cc * 0.5 : 0;
-    const tRed = j => red || (ing && p.corruptT >= (j + 1) / (p.tethers.length + 1) * CFG.podiumCorruptTime);   // has THIS bolt turned red yet?
+    const tRed = j => red || (ing && p.corruptT >= (j + 1) / (p.tethers.length + 1) * podCorruptTime());   // has THIS bolt turned red yet?
     if (lit) { glowAt(x, y - 6, 34, 34, 0.8 * lit); glowAt(x, y - 30, 8, 40, 0.5 * lit); }
     if (p.state === 'pure') glowAt(x, y - 14, 26, 26, 0.5, PURE_GLOW);
     // the stone: a wide base, a step, and a top plate (dark grey with light edges)
@@ -5607,7 +5615,7 @@ function drawPodiums(camX, camY) {
     if (ing) { g.fillStyle = '#ff0000'; const rw = Math.round(13 * cc); g.fillRect(x - rw, y + 2, rw * 2, 1); g.fillRect(x - Math.round(8 * cc), y - 5, Math.round(16 * cc), 1); }   // the red creeps out along its edges
     for (const sx of [-12, 11]) { g.fillStyle = '#3c3c44'; g.fillRect(x + sx, y - 3, 1, 5); }
     // where the shard floats (shaking while you tear at it)
-    const k = p.state === 'pure' ? clamp((p.breakT || 0) / CFG.breakTime, 0, 1) : 0, shake = k * 2.5 + cc * (ing ? 1.5 : 0);
+    const k = p.state === 'pure' ? clamp((p.breakT || 0) / tearTime(), 0, 1) : 0, shake = k * 2.5 + cc * (ing ? 1.5 : 0);
     const sx = x + rr(-shake, shake), sy = y - 14 + rr(-shake, shake) + Math.sin(S.t * 2 + p.x) * 1.5;
     // THE LIGHTNING from the little stars around it:
     //   pure    = every star sends a bolt into the shard (snapped ones hang broken)
@@ -6046,7 +6054,7 @@ function drawPurifyHUD(k, late) {
     for (let i = 0; i < n; i++) {
       const p = order[i], x = px + 8 + i * 10, mine = s && !s.pure && s.podium === p;
       if (p.filled) { glowAt(x + 3, 29, 6, 6, 0.6); g.fillStyle = '#ff0000'; g.fillRect(x, 26, 7, 7); g.fillStyle = '#fff'; g.fillRect(x + 2, 28, 3, 3); }   // corrupted
-      else if (p.state === 'corrupting') { const fh = Math.round(7 * p.corruptT / CFG.podiumCorruptTime); g.fillStyle = '#3a2c8a'; g.fillRect(x, 26, 7, 7); g.fillStyle = Math.floor(S.t * 6) % 2 ? '#ff0000' : '#c00000'; g.fillRect(x, 33 - fh, 7, fh); }   // corrupting: filling up red
+      else if (p.state === 'corrupting') { const fh = Math.round(7 * p.corruptT / podCorruptTime()); g.fillStyle = '#3a2c8a'; g.fillRect(x, 26, 7, 7); g.fillStyle = Math.floor(S.t * 6) % 2 ? '#ff0000' : '#c00000'; g.fillRect(x, 33 - fh, 7, fh); }   // corrupting: filling up red
       else if (p.state === 'pure') { g.fillStyle = '#3a2c8a'; g.fillRect(x, 26, 7, 7); g.fillStyle = '#5b4cc8'; g.fillRect(x + 2, 28, 3, 3); }   // still purified: dim blue
       else { g.fillStyle = mine && Math.floor(S.t * 4) % 2 ? '#ff0000' : '#3c3c42'; g.fillRect(x, 26, 7, 7); g.fillStyle = '#000'; g.fillRect(x + 1, 27, 5, 5); }   // empty (you have its shard)
     }
@@ -6172,7 +6180,7 @@ function frontAt(F, a) {                                   // how far out the da
 }
 function updateFront(dt) {
   const F = world.front; if (!F) return;
-  const T = S.t, speed = CFG.nullSpeed;
+  const T = S.t, speed = CFG.nullSpeed * diff().pure;     // (faster on harder difficulties)
   // a new SURGE now and then
   F.nextSurge -= dt;
   if (F.nextSurge <= 0) { F.surges.push({ a: rnd() * 6.2832, w: rr(0.05, 0.14), amp: rr(1.8, 3), t: 0, life: rr(5, 10) }); F.nextSurge = rr(3, 7); }
@@ -6205,7 +6213,7 @@ function updateFront(dt) {
     const a = rnd() * 6.2832, fr = frontAt(F, a) - 3;          // (its root sits right at the wall's edge, so it's connected)
     F.arms.push({ pts: [[Math.cos(a) * fr, Math.sin(a) * fr]], dir: a + Math.PI + rr(-0.5, 0.5), w0: rr(26, 38), len: 0, max: rr(150, 280), depth: 0, nextBranch: rr(40, 80), ph: rnd() * 9 });
   }
-  const grow = CFG.armSpeed * dt;
+  const grow = CFG.armSpeed * diff().pure * dt;
   for (const arm of F.arms) {
     const tip = arm.pts[arm.pts.length - 1];
     // a corrupted podium BURNS any arm that reaches near it (any part of it, not just the tip):
@@ -7875,7 +7883,7 @@ function gatherLights(camX, camY) {
   // shards lying around
   for (const s of world.shards) if (s.state === 'free') addLight(s.x - camX, s.y - camY, 46, 0.55, ...(s.pure ? [0.45, 0.4, 1] : [1, 0.05, 0.05]));
   if (player && player.held) addLight(player.held.cx - camX, player.held.cy - camY, 70, 0.6, ...(player.held.pure ? [0.45, 0.4, 1] : [1, 0.05, 0.05]));
-  for (const p of world.podiums) if (p.state === 'corrupt') addLight(p.x - camX, p.y - camY, 120, 0.9, 1, 0.05, 0.05); else if (p.state === 'corrupting') { const c = p.corruptT / CFG.podiumCorruptTime; addLight(p.x - camX, p.y - 14 - camY, 70 + c * 50, 0.6 + c * 0.3, 0.45 + c * 0.55, 0.4 - c * 0.35, 1 - c * 0.95); } else if (p.state === 'pure') addLight(p.x - camX, p.y - 14 - camY, 70, 0.5, 0.45, 0.4, 1);
+  for (const p of world.podiums) if (p.state === 'corrupt') addLight(p.x - camX, p.y - camY, 120, 0.9, 1, 0.05, 0.05); else if (p.state === 'corrupting') { const c = p.corruptT / podCorruptTime(); addLight(p.x - camX, p.y - 14 - camY, 70 + c * 50, 0.6 + c * 0.3, 0.45 + c * 0.55, 0.4 - c * 0.35, 1 - c * 0.95); } else if (p.state === 'pure') addLight(p.x - camX, p.y - 14 - camY, 70, 0.5, 0.45, 0.4, 1);
   if (world.front) for (let i = 0; i < FRONT_N; i += 8) { const a = i / FRONT_N * 6.2832; addLight(Math.cos(a) * world.front.r[i] - camX, Math.sin(a) * world.front.r[i] - camY, 120, 0.25, 0.5, 0.4, 1); }
   for (const n of world.nulls) if (n.burn < 1) addLight(n.x - camX, n.y - camY, n.r * 1.5 * (1 - n.burn), 0.3, 0.5, 0.4, 1);   // (a blue-purple glow)
   for (const m of world.mines || []) addLight(m.x - camX, m.y - camY, 50 + m.near * 30, 0.4 + m.near * 0.4, 0.5, 0.4, 1);
@@ -8047,6 +8055,7 @@ const GRAIN = [0, 1, 2].map(s => {
 function cinematic() {
   if (!vignetteC || vignetteC.width !== W || vignetteC.height !== H) vignetteC = makeVignette();
   g.drawImage(vignetteC, 0, 0);
+  if (S.sector) return;                            // (no flickering film grain in sectors)
   const p = GRAIN[Math.floor(S.t * 24) % 3];
   p.setTransform(new DOMMatrix().translate(ri(0, 127), ri(0, 127)));
   g.save(); g.globalCompositeOperation = 'overlay'; g.globalAlpha = 0.16;
@@ -8700,6 +8709,10 @@ const REALITIES = [
 const TEST_VERSION = BUILD_ID === 'dev';
 function beatenList() { try { return JSON.parse(localStorage.getItem('v0id3d_beaten') || '[]'); } catch { return []; } }
 function markBeaten(name) { try { const b = beatenList(); if (!b.includes(name)) { b.push(name); localStorage.setItem('v0id3d_beaten', JSON.stringify(b)); } } catch {} }
+// a reality is BEATEN when every sector in it (that exists) has been corrupted
+function realityBeaten(r) { const b = beatenList(); return r.sectors.filter(s => s.open).every(s => b.includes(s.name)); }
+// the next sector to play in a reality: the first one you haven't beaten
+function nextUnbeaten(r) { const b = beatenList(); return r.sectors.find(s => s.open && !b.includes(s.name)) || r.sectors[0]; }
 function cardOpen(it, i) {
   if (!it.open) return false;                              // (doesn't exist yet)
   if (S.mode === 'realities' || S.mode === 'difficulty' || TEST_VERSION || i === 0) return true;
@@ -8709,12 +8722,16 @@ function cardOpen(it, i) {
 // DIFFICULTY (chosen after the reality): how many enemies (spawn), how hard
 // they hit (dmg) and how fast they move (speed), compared to NORMAL
 const DIFFICULTIES = [
-  { name: 'EASY',   open: true, spawn: 0.6,  dmg: 0.65, speed: 0.8,  col: '#6e96ff' },
-  { name: 'NORMAL', open: true, spawn: 1,    dmg: 1,    speed: 1,    col: '#c8c8d0' },
-  { name: 'HARD',   open: true, spawn: 1.35, dmg: 1.3,  speed: 1.15, col: '#ff6040' },
-  { name: 'BRUTAL', open: true, spawn: 1.7,  dmg: 1.6,  speed: 1.3,  col: '#ff0000' },
+//   tear = how long ripping a shard out takes, corrupt = how long corrupting takes (at The Anchor
+//   and on the podium), you = YOUR speed, pure = how fast the Purification creeps in
+  { name: 'EASY',   open: true, spawn: 0.6,  dmg: 0.65, speed: 0.8,  tear: 0.75, corrupt: 0.75, you: 1.1,  pure: 0.75, col: '#6e96ff' },
+  { name: 'NORMAL', open: true, spawn: 1,    dmg: 1,    speed: 1,    tear: 1,    corrupt: 1,    you: 1,    pure: 1,    col: '#c8c8d0' },
+  { name: 'HARD',   open: true, spawn: 1.35, dmg: 1.3,  speed: 1.15, tear: 1.25, corrupt: 1.25, you: 0.92, pure: 1.25, col: '#ff6040' },
+  { name: 'BRUTAL', open: true, spawn: 1.7,  dmg: 1.6,  speed: 1.3,  tear: 1.5,  corrupt: 1.5,  you: 0.85, pure: 1.5,  col: '#ff0000' },
 ];
-const diff = () => S.diff || DIFFICULTIES[1];
+const diff = () => (!S.tutorial && S.diff) || DIFFICULTIES[1];   // (the tutorial is always NORMAL)
+const tearTime = () => CFG.breakTime * diff().tear;
+const podCorruptTime = () => CFG.podiumCorruptTime * diff().corrupt;
 // how many of something to spawn on this difficulty (rounded; a [from, to] range scales both ends)
 function diffCount(n) { if (Array.isArray(n)) return n.map(v => Math.round(v * diff().spawn)); return Math.round((n || 0) * diff().spawn); }
 // what the screens' headers say (and the "AREA 1" text in a level, now the sector's name)
@@ -8811,7 +8828,14 @@ function menuPick(i) {
   const it = menuList()[i]; if (!it) return;
   if (!cardOpen(it, i)) { SFX.denied(); S.menuShake = { i, t: 0.35 }; return; }       // locked: a "nope" and a shake
   SFX.menuPick();
-  if (S.mode === 'realities') toDifficulty(it); else if (S.mode === 'difficulty') { S.diff = it; toSectors(S.reality); } else startSector(it);
+  if (S.mode === 'realities') toDifficulty(it);
+  else if (S.mode === 'difficulty') {
+    S.diff = it;
+    // you only get to PICK a sector once you've beaten the whole reality — until then you play them in order
+    if (TEST_VERSION || realityBeaten(S.reality)) toSectors(S.reality);
+    else { const sec = nextUnbeaten(S.reality); fadeTo(() => startSector(sec), 0.5); }
+  }
+  else startSector(it);
 }
 function menuKey(key) {
   const n = menuList().length;
@@ -8878,6 +8902,7 @@ function drawMenu() {
   const reals = S.mode === 'realities', diffs = S.mode === 'difficulty';
   text(reals ? 'CHOOSE A REALITY' : diffs ? 'CHOOSE A DIFFICULTY' : 'CHOOSE A SECTOR', W / 2, 34, 3, '#fff', 0.15, 'center');
   text(reals ? 'WHERE WILL YOU BE SENT?' : 'REALITY: ' + S.reality.name + (diffs ? '' : '   -   ' + diff().name), W / 2, 62, 1, '#ff0000', 0.05, 'center');
+  if (diffs && !TEST_VERSION && !realityBeaten(S.reality)) text('BEAT EVERY SECTOR OF ' + S.reality.name + ' TO CHOOSE SECTORS FREELY', W / 2, H - 40, 1, '#5a5a64', 0, 'center');
   for (const c of menuCards()) {
     const sel = c.i === S.menuSel, open = cardOpen(c.it, c.i);
     const sh = S.menuShake && S.menuShake.i === c.i ? Math.round(Math.sin(S.menuShake.t * 60) * 3 * S.menuShake.t / 0.35) : 0;
@@ -9360,7 +9385,7 @@ function render() {
   if (world.portal && player && (S.mode === 'play' || S.mode === 'warping') &&   // in or on it? you stay visible, on top
       Math.hypot(player.x - world.portal.x, player.y - world.portal.y) < 80) drawPlayer(camX, camY, k);
 
-  postFX(k, late);
+  if (!S.sector) postFX(k, late);                  // (the glitch overlay — not in sectors)
   cinematic();                                     // vignette + film grain (on the world, not the HUD)
   riftFX(S.rift * (1 - S.pure), S.riftX - camX, S.riftY - camY);
   edgeCorruption(S.mode === 'dying' ? 0.6 + S.dieT * 0.3 : S.mode === 'grabbed' ? 1 : late,
