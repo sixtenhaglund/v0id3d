@@ -100,6 +100,9 @@ const CFG = {
   darkCone: 18,           // a DARK Beamer fires a CONE: this wide (pixels, each side) at its far end
   slimeSlow: 0.65,        // walking through a dark Basher's slime: this fraction of your speed
   slimeLife: 2,           // ...and each blob of slime lasts this long (seconds)
+  nodeRange: 150,         // a NODE (LIGHTNING ROUND) zaps you when you're this close...
+  nodeDps: 10,            // ...for this much damage per second
+  nodeFollow: 9,          // Nodes creep toward you this fast (pixels per second) when you're within 450 px
   mineChain: 90,          // a mine going off sets off every other mine this close (they don't hurt you again)
   mineShotBlast: 150,     // a mine SHOT by a Beamer blows up every enemy this close (bigger than a Beamer's reach, so the shooter goes too)
   mineDamage: 15,
@@ -115,6 +118,7 @@ const CFG = {
   mawSight: 230,          // it notices you this close...
   mawRange: 190,          // ...and opens its mouth this close
   mawReach: 230,          // how far its lightning goes
+  mawWidth: 18,           // how far from the middle of a Thundermaw's lightning it still hits you (it's drawn this wide too)
   mawDps: 20,             // touching a Thundermaw's lightning hurts this much PER SECOND...
   mawZap: [2, 5],         // ...and its lightning lasts this long (seconds, random between the two)
   armSpeed: 16,           // how fast the Purification's ARMS grow (pixels per second)
@@ -129,7 +133,7 @@ const CFG = {
 //  reloads into the new version. build-site.js stamps a real number in here
 //  for the website; 'dev' (your own copy) never checks.
 // =====================================================================
-const BUILD_ID = '20261011124105';
+const BUILD_ID = '20261011132412';
 // THE PUBLIC LOCK: true = the website/app won't start, it just says
 // "NO IVAR. NO." (your own 'dev' copy always plays). false = everyone can play.
 const PUBLIC_LOCKED = false;
@@ -1640,7 +1644,8 @@ function musicTick() {
   portalMusicTick();
   // which song: in the soundtrack player, the one you picked; on the menus, the menu theme
   const want = S.mode === 'soundtrack' ? JUKE.playing
-    : S.mode === 'title' || S.mode === 'realities' || S.mode === 'difficulty' || S.mode === 'sectors' || S.mode === 'settings' ? 'menu' : null;
+    : S.mode === 'title' || S.mode === 'realities' || S.mode === 'difficulty' || S.mode === 'sectors' || S.mode === 'settings' ? 'menu'
+    : S.sector && S.sector.music && (S.mode === 'play' || S.mode === 'paused' || S.mode === 'clear') ? S.sector.music : null;   // (a sector's own music)
   if (want !== MUS.track) {
     // in the soundtrack player, switching songs CUTS the old one cleanly
     // (its long notes and echoes) instead of letting it ring over the new one
@@ -1872,6 +1877,30 @@ function songRiftRunner(step, t, sd) {
   if (bar === 0 && i === 0) sCrash(t, 0.08);
 }
 
+// 11 — LIGHTNING ROUND: fast, loud and electric. A pounding four-on-the-floor
+// kick with a snare that cracks like a spark, rolling 16th-note saw bass,
+// an ALARM stab every bar, a racing arpeggio, and electric ZAPS. Every 8
+// bars it builds up with a riser and drops back in with a crash.
+const LR_ROOTS = [33, 33, 29, 31, 33, 33, 36, 35];          // A, A, F, G, A, A, C, B (minor, tense)
+const LR_ARP = [0, 7, 12, 15, 12, 7, 0, 7, 12, 19, 15, 12, 7, 12, 15, 19];
+const LR_LEAD = [81, -1, 81, 79, 77, -1, 76, -1, 81, -1, 84, -1, 83, 81, 79, -1];
+function songLightning(step, t, sd) {
+  const i = step % 16, bar = Math.floor(step / 16) % 16, root = LR_ROOTS[bar % 8], build = bar % 8 === 7, hot = bar >= 8;
+  if (i % 4 === 0 && !(build && i >= 8)) sKick(t, 0.8, 175, 40, 0.24);
+  if (build && i >= 8) sKick(t, 0.35 + (i - 8) * 0.06, 175, 60, 0.1);                                               // the build: kicks speeding up
+  if (i === 4 || i === 12) { sNoise(t, 0.12, 0.28, 'bandpass', 2400, 0.8, true); sNoise(t, 0.05, 0.12, 'highpass', 6000, 0.7); }   // snare like a spark
+  sHat(t, i % 2 ? 0.05 : 0.028);
+  if (i % 4 === 2) sHat(t, 0.06, true);
+  tone(NOTE(root + (i % 2 ? 12 : 0)), t, sd * 0.85, { type: 'sawtooth', vol: 0.075, cutoff: 420 + (i % 4) * 160 + (hot ? 400 : 0), q: 6, bus: songDist() });   // rolling bass
+  if (i % 8 === 0) sSub(root, t, sd * 6, 0.08);
+  tone(NOTE(root + 36 + LR_ARP[i]), t, sd * 0.7, { type: 'square', vol: 0.014, cutoff: 3000, pan: (i % 2 ? 0.4 : -0.4) });   // racing arpeggio
+  if (i === 0 || i === 3) sPad([root + 24, root + 27, root + 31], t, sd * 1.2, { type: 'sawtooth', vol: 0.016, cutoff: 2600, verb: 0.15 });   // the ALARM stab
+  if (hot) { const n = LR_LEAD[i]; if (n > 0) { tone(NOTE(n - 12 + (root - 33)), t, sd * 1.5, { type: 'square', vol: 0.032, cutoff: 4000, echo: 0.25, pan: -0.2 }); tone(NOTE(n + (root - 33)), t, sd * 1.2, { type: 'sawtooth', vol: 0.01, cutoff: 6000, pan: 0.25 }); } }
+  if ((i === 7 || i === 15) && (step * 7 + bar) % 3 === 0) sNoise(t, sd * 0.8, 0.07, 'bandpass', 3000, 3, true, 9000);   // an electric ZAP
+  if (build && i === 0) sRiser(t, sd * 16, 0.09);
+  if (bar % 8 === 0 && i === 0) sCrash(t, 0.1);
+}
+
 // 8 — dreamy and HOPEFUL: big bright chords, a soft swaying beat, a bass,
 // TWO shimmering arpeggios crossing each other, and a choir-like lead.
 const STAR_CHORDS = [[50, 54, 57, 61, 64], [47, 50, 54, 57, 61], [43, 47, 50, 54, 61], [45, 49, 52, 54, 57]];
@@ -1955,6 +1984,7 @@ const SONGS = [
   { key: 'stardim', gain: 1.95, name: '8', bpm: 68, step: songStarDimension, vibe: 'DREAMY AND HOPEFUL. THE ONLY HAPPY SONG.' },
   { key: 'deepsignal', gain: 2.19, name: '9', bpm: 82, step: songDeepSignal, vibe: 'SLOW UNDERWATER DUB. A RADIO SENDS MORSE CODE.' },
   { key: 'lastsecond', gain: 1.62, name: '10', bpm: 120, step: songLastSecond, vibe: 'TICKING SUSPENSE THAT KEEPS RISING.' },
+  { key: 'lightning', gain: 1.3, name: '11', bpm: 152, step: songLightning, vibe: 'LIGHTNING ROUND: FAST, LOUD AND ELECTRIC.' },
 ];
 const SONG_BY_KEY = Object.fromEntries(SONGS.map(s => [s.key, s]));
 const JUKE = { playing: null };          // which song the soundtrack player is playing (null = none)
@@ -2392,16 +2422,19 @@ function startArea(area, n) {
   S.timeMax = S.time = Math.min(CFG.maxTime, CFG.baseTime + (n - CFG.firstShards) * CFG.timePerExtraShard);
   player = { x: 0, y: 70, vx: 0, vy: 0, carried: [], trail: [],
              fx: 0, fy: -1,              // which way you're facing (the way you last walked) — dashes go this way
-             dashT: 0, ghosts: [], held: null };   // (held = the ONE shard you're holding, in purifying sectors)     // time left in the current dash, and its afterimages
+             dashT: 0, ghosts: [], held: null, backs: [] };   // (held = the shard in your hands; backs = the ones floating behind you)     // time left in the current dash, and its afterimages
   S.dashCd = 0;
   for (const s of world.shards.slice(0, Math.min(CFG.testStartCarried, world.total - 1))) {   // (testing shortcut)
     s.state = 'carried'; s.cx = player.x; s.cy = player.y; player.carried.push(s);
   }
   cam.x = player.x; cam.y = player.y;
   particles = []; flyers = []; pops = []; FX.list = []; SPIKES.list = []; SUCK.list = [];
-  if (world.front) purePattern();                 // (build the Purification's texture NOW, while loading — not mid-game when the wall first shows up)
+  if (world.front) { pureTile(); pureHiTile(); rimTile(); }                 // (build the Purification's texture NOW, while loading — not mid-game when the wall first shows up)
   S.banner = 0;                                   // (the sector's name slides in at the top AFTER the arrival)
   S.hudSeen = {}; S.heldK = 0; S.heldShow = null;  // (the HUD slides in fresh)
+  // LIGHTNING ROUND-style rules: a countdown, and arrows to every podium from the start
+  S.lrTime = sec && sec.timer ? (diff().name === 'BRUTAL' && sec.timerBrutal ? sec.timerBrutal : sec.timer) : null;
+  if (sec && sec.allPodiumsSeen) for (const p of world.podiums) p.seen = true;
   S.spawn = S.sector ? { t: 0 } : null;           // THE ARRIVAL: The Anchor forms, and you come out of it
   if (S.spawn) { player.x = 0; player.y = 0; cam.x = 0; cam.y = 20; }
   S.mode = 'play'; S.intro = 3.2; S.boost = 1; S.msgT = 0; S.rift = 0; S.riftB = null;
@@ -2460,7 +2493,7 @@ function sealComplete() {
 // death menu can say what killed you. small = a Rift's little bite (it doesn't
 // use the "can't be hit again" cooldown, it has its own 2-second rhythm).
 // noCd = this hit ignores the short "can't be hit again" cooldown (every laser, spike... counts)
-const ENEMY_CAUSES = ['beamer', 'mine', 'basher', 'spike', 'maw'];
+const ENEMY_CAUSES = ['beamer', 'mine', 'basher', 'spike', 'maw', 'node'];
 function hurt(dmg, cause, small = false, noCd = false) {
   if (S.sector && ENEMY_CAUSES.includes(cause)) dmg *= diff().dmg;   // (enemies hit softer / harder on easier / harder difficulties)
   if (S.mode !== 'play' || (world && world.won)) return;   // (already won: nothing can hurt you any more)
@@ -2543,6 +2576,7 @@ const DEATH_TEXT = {
   purified: ['PURIFIED', 'DISSOLVED IN THE PURIFICATION'],
   border:   ['THROWN BACK', 'KILLED BY THE BORDER'],
   danger:   ['DISSOLVED', 'KILLED BY A DANGERBLOB'],
+  node:     ['ELECTROCUTED', 'KILLED BY A NODE'],
   mine:   ['PURIFIED', 'KILLED BY A PURIFICATION MINE'],
   basher: ['CRUSHED', 'KILLED BY A BASHER'],
   spike:  ['SHREDDED', 'KILLED BY BASHER SPIKES'],
@@ -2690,9 +2724,11 @@ function drawLocators(camX, camY) {
 }
 
 // DASH (SPACE): shoot forward — the way you're walking (or last walked)
+// the dash's cooldown: a sector can make it quicker (LIGHTNING ROUND) — but not on BRUTAL
+function dashCooldown() { const sec = S.sector; return sec && sec.dashCd && diff().name !== 'BRUTAL' ? sec.dashCd : CFG.dashCooldown; }
 function tryDash() {
   if (S.dashCd > 0 || player.dashT > 0) return;
-  player.dashT = CFG.dashTime; S.dashCd = CFG.dashCooldown;
+  player.dashT = CFG.dashTime; S.dashCd = dashCooldown();
   S.shake = Math.max(S.shake, 1.5);
   // a puff of bits blown out behind you
   for (let i = 0; i < 14; i++) {
@@ -2930,7 +2966,7 @@ function update(dt) {
   // each song's own measured volume (SONGS in songs.js) — in the soundtrack
   // player AND for the menu theme on the real menus, so it's equally loud in both
   const songGain = S.mode === 'soundtrack' ? (JUKE.playing ? SONG_BY_KEY[JUKE.playing].gain || 1 : 1) : MUS.track ? SONG_BY_KEY[MUS.track].gain || 1 : 1;
-  const musicVol = inMenu() ? 0.55 * songGain : S.mode === 'paused' ? 0.12 : S.mode === 'cracking' || S.mode === 'softdead' ? 0.1 : 0.45;   // (dying: the music drops away so you hear the death)
+  const musicVol = inMenu() ? 0.55 * songGain : S.mode === 'paused' ? 0.12 : S.mode === 'cracking' || S.mode === 'softdead' ? 0.1 : 0.45 * songGain;   // (a sector's own music, at its measured loudness)   // (dying: the music drops away so you hear the death)
   // (while dying, the background noise drops so the kill sound cuts through)
   const bgK = S.mode === 'paused' || S.mode === 'warping' || S.mode === 'beyond' || S.mode === 'stars' ? 0 : S.mode === 'mission' || S.mode === 'soundtrack' ? 0 : inMenu() ? 0.1 : S.mode === 'dying' ? 0.25 : S.mode === 'dead' ? 0.6 : lateK();
   audioUpdate(bgK * (1 - S.pure), hum, pan, screamK() * (1 - S.pure * 0.85), musicVol);
@@ -2954,7 +2990,7 @@ function updatePlay(dt, k) {
   if (ix || iy) { player.fx = ix / il; player.fy = iy / il; }   // remember which way you're facing
   const slimed = world.slime && inSlime(player.x, player.y);   // (a dark Basher's slime: danger.js)
   const slow = (1 - S.pure * 0.65) * (S.shield ? CFG.shieldSlow : 1) * (slimed ? CFG.slimeSlow : 1);   // near The Portal you get slower and slower... (and with your shield up)
-  const ps = CFG.playerSpeed * (S.sector ? diff().you : 1);   // (you're a bit faster on easier difficulties)
+  const ps = CFG.playerSpeed * (S.sector ? diff().you * (S.sector.youMul || 1) : 1);   // (faster on easier difficulties, and in LIGHTNING ROUND)
   const tvx = ix / il * ps * slow, tvy = iy / il * ps * slow;
   // IN THE PURIFICATION it's slippery: you speed up and slow down much more slowly (like on ice)
   const inPure = world.opt.podiums && !!insideNull(player.x, player.y);
@@ -3064,6 +3100,9 @@ function updatePlay(dt, k) {
     if (S.mode === 'play') updateMines(dt);
     if (S.mode === 'play') updateBashers(dt);
     if (S.mode === 'play') updateMaws(dt);
+    if (S.mode === 'play') updateNodes(dt);
+    // the COUNTDOWN (LIGHTNING ROUND): at zero, you've failed
+    if (S.lrTime != null && S.mode === 'play' && !world.won) { S.lrTime -= dt; if (S.lrTime <= 0) { S.lrTime = 0; crackDie('time'); return; } }
     if (S.mode !== 'play') return;
   }
   else for (const s of world.shards) {
@@ -5189,6 +5228,24 @@ const CORRUPT_HOVER = -48, CORRUPT_TIME = 1.6;            // the shard hangs thi
 
 // --- the shard you're holding (or null) ---
 const held = () => player && player.held;
+// CARRYING MORE THAN ONE: the extra shards float BEHIND you (player.backs).
+// The one in your hands (player.held) is the one you use; E and SPACE swap in
+// the right one automatically. You can carry 2 (LIGHTNING ROUND: 10) — on
+// BRUTAL only 1 (LIGHTNING ROUND on BRUTAL: 5).
+const holdCap = () => { const big = S.sector && S.sector.holdCap; if (diff().name === 'BRUTAL') return big ? Math.ceil(big / 2) : 1; return big || 2; };
+const carried = () => player ? [player.held, ...(player.backs || [])].filter(Boolean) : [];
+function takeShard(s) {                                     // a new shard goes into your hands (the old one joins the ones behind you)
+  if (player.held) player.backs.push(player.held);
+  player.held = s;
+}
+function swapTo(q) {                                        // bring shard q (from behind you) into your hands
+  if (!q || q === player.held || (player.held && player.held.anim)) return;
+  player.backs = player.backs.filter(b => b !== q);
+  if (player.held) player.backs.unshift(player.held);
+  player.held = q;
+}
+function dropFromBacks(q) { player.backs = player.backs.filter(b => b !== q); }
+function promoteBack() { if (!player.held && player.backs.length) player.held = player.backs.shift(); }
 const nearAnchor = () => Math.hypot(player.x, player.y) <= CFG.deliverRange;
 function podiumNear(ok = p => p.state !== 'corrupt' && p.state !== 'corrupting') {
   let best = null, bd = CFG.podiumRange;
@@ -5199,6 +5256,11 @@ function podiumNear(ok = p => p.state !== 'corrupt' && p.state !== 'corrupting')
 // E (pressed): corrupt at The Anchor, or put it back on its podium.
 // (Taking a shard OFF a podium is HOLD E — see updatePurify.)
 function interactPurify() {
+  promoteBack();
+  if (player.backs.length && !(player.held && player.held.anim)) {
+    const want = (q) => { if (q.half !== undefined) return nearAnchor(); const p = podiumNear(); if (p) return !q.pure && q.podium === p; return nearAnchor() && q.pure; };
+    if (!want(player.held)) swapTo(player.backs.find(want));   // (one of the shards behind you is the one that fits here)
+  }
   const s = held();
   if (!s) { if (!podiumNear(p => p.state === 'pure')) { say(nearAnchor() ? 'BRING A SHARD TO CORRUPT' : 'FIND A SHARD'); SFX.denied(); } return; }
   if (s.anim) return;                                       // (busy: it's still flying)
@@ -5223,7 +5285,7 @@ function interactPurify() {
 // a HALF goes into The Anchor and waits there. When its other half arrives,
 // they JOIN back into one shard — and that shard is corrupted (the ritual)
 function halfIntoAnchor(h) {
-  player.held = null; h.state = 'inAnchor';
+  player.held = null; promoteBack(); h.state = 'inAnchor';
   world.anchorHalves.push(h); world.anchorPulse = 1;
   explode(0, 0, 'pure', 0.5, false); SFX.halfIn();
   const other = world.anchorHalves.find(o => o !== h && o.parent === h.parent);
@@ -5231,7 +5293,7 @@ function halfIntoAnchor(h) {
   world.anchorHalves = world.anchorHalves.filter(o => o !== h && o !== other);
   h.state = other.state = 'merged';
   const s = h.parent;
-  s.state = 'held'; s.pure = true; s.charges = 0; player.held = s; s.cx = 0; s.cy = 0;
+  s.state = 'held'; s.pure = true; s.charges = 0; takeShard(s); s.cx = 0; s.cy = 0;
   s.anim = { phase: 'in', t: 0, x0: 0, y0: 0 };
   explode(0, -20, 'pure', 1.0, false); SFX.merge();
 
@@ -5239,7 +5301,7 @@ function halfIntoAnchor(h) {
 // Q: drop it on the ground
 function dropShard() {
   const s = held(); if (!s || s.anim) return;
-  player.held = null;
+  player.held = null; promoteBack();
   s.state = 'free'; s.x = player.x + player.fx * 12; s.y = player.y + player.fy * 12;
   s.noPick = true;                                          // (you have to walk away before you can pick it up again)
   SFX.drop();
@@ -5248,7 +5310,7 @@ function dropShard() {
 function tearShard(p) {
   const s = p.shard;
   p.state = 'empty'; p.breakT = 0;
-  s.state = 'held'; player.held = s; s.cx = p.x; s.cy = p.y - 14;
+  s.state = 'held'; takeShard(s); s.cx = p.x; s.cy = p.y - 14;
   explode(p.x, p.y - 14, 'pure', 1.1, false);              // RIPPED OUT: an explosion of blue light
   for (const tt of p.tethers) burstParticles(p.x + tt.x, p.y + tt.y, 6, 0.6, PURE_COLS);
   SFX.tear();
@@ -5269,7 +5331,8 @@ function alertEnemies(x, y) {
 // podCorruptTime() seconds the red eats into the blue — bolt by bolt,
 // rift by rift — and only then is the whole podium corrupted
 function placeShard(s, p) {
-  player.held = null;
+  if (player.held === s) player.held = null; else dropFromBacks(s);
+  promoteBack();
   s.state = 'placed'; s.x = p.x; s.y = p.y - 6;
   p.state = 'corrupting'; p.corruptT = 0;
   S.shake = Math.max(S.shake, 4);
@@ -5289,6 +5352,7 @@ function podiumCorrupted(p) {
   for (const b of world.beamers) if (!b.dead && near(b)) { b.dead = true; b.deadT = 0; explode(b.x, b.y, 'red', 0.8 + b.kind * 0.3, false); }
   for (const b of world.bashers) if (!b.dead && near(b)) { b.dead = true; explode(b.x, b.y, 'red', 1, false); }
   for (const m of world.maws) if (m.state !== 'dying' && near(m)) { m.state = 'dying'; m.t = 0; }
+  for (const n of world.nodes || []) if (!n.dead && near(n)) killNode(n);
   for (const m of world.mines) if (!m.gone && near(m)) { m.gone = true; explode(m.x, m.y, 'red', 0.7, false); }
   world.podRing = { x: p.x, y: p.y, t: S.t };
   const left = world.podiums.length - world.delivered;
@@ -5299,13 +5363,13 @@ function updatePurify(dt) {
   updateFront(dt);
   if (S.mode !== 'play') return;
   // picking up a shard lying on the ground: only with empty hands
-  if (!held()) {
+  if (carried().length < holdCap()) {
     for (const s of world.shards) {
       if (s.state !== 'free') continue;
       const d = Math.hypot(s.x - player.x, s.y - player.y);
       if (s.noPick) { if (d > 26) s.noPick = false; continue; }
       if (d < CFG.pickupRange + 6) {
-        s.state = 'held'; player.held = s; s.cx = s.x; s.cy = s.y;
+        s.state = 'held'; takeShard(s); s.cx = s.x; s.cy = s.y;
         burstParticles(s.x, s.y, 20, 0.8, s.pure ? PURE_COLS : PCOLS);
         SFX.pickup(clamp((s.x - cam.x) / 200, -1, 1));
 
@@ -5314,7 +5378,7 @@ function updatePurify(dt) {
     }
   }
   // HOLD E next to a purified podium: its lightning strains... and snaps, bolt by bolt
-  const tp = !held() && keys.e ? podiumNear(p => p.state === 'pure') : null;
+  const tp = carried().length < holdCap() && keys.e ? podiumNear(p => p.state === 'pure') : null;
   for (const p of world.podiums) {
     if (p.state !== 'pure') continue;
     const before = p.breakT || 0;
@@ -5355,12 +5419,23 @@ function updatePurify(dt) {
     S.hp = Math.min(CFG.maxHp, S.hp + CFG.anchorHeal * dt);
     if (rnd() < dt * 6) particles.push({ x: player.x + rr(-6, 6), y: player.y + rr(-4, 4), vx: 0, vy: -rr(15, 30), life: 0.7, max: 0.7, col: rnd() < 0.6 ? '#ff0000' : '#fff', s: 1 });
   }
+  promoteBack();
+  const okShield = q => q && !q.pure && q.charges > 0 && !q.anim && q.half === undefined;
+  if (keys[' '] && !okShield(held())) swapTo(player.backs.find(okShield));
   const s = held();
   S.heldK = clamp((S.heldK || 0) + (s ? dt : -dt) / 0.25, 0, 1);   // (the bottom bar slides in / out)
   // the held shard floats next to you (in FRONT of you while the shield is up)
   S.shield = !!(s && !s.pure && s.charges > 0 && !s.anim && keys[' ']);
   if (S.shield && !S.shieldWas) SFX.shieldUp();
   S.shieldWas = S.shield;
+  // the shards behind you trail along in a little arc, BEHIND you (opposite the way you face)
+  player.backs.forEach((bk, j) => {
+    if (bk.anim) return;
+    const n = player.backs.length, spread = (j - (n - 1) / 2) * 0.55, a = Math.atan2(-player.fy, -player.fx) + spread, r = 13 + Math.floor(j / 5) * 8;
+    const tx = player.x + Math.cos(a) * r + Math.sin(S.t * 1.7 + j) * 2, ty = player.y + Math.sin(a) * r - 6 + Math.cos(S.t * 2.1 + j) * 2;
+    const k = 1 - Math.exp(-dt * (8 - Math.min(5, j)));      // (the further back, the lazier it follows)
+    bk.cx += (tx - bk.cx) * k; bk.cy += (ty - bk.cy) * k;
+  });
   if (s && !s.anim) {
     const a = S.t * 2.2;
     const tx = S.shield ? player.x + player.fx * 9 : player.x + Math.cos(a) * 15, ty = S.shield ? player.y + player.fy * 9 : player.y + Math.sin(a) * 10;
@@ -5542,7 +5617,7 @@ function drawPodiumLinks(camX, camY) {
       if (Math.max(x0, x1) < -20 || Math.min(x0, x1) > W + 20 || Math.max(y0, y1) < -20 || Math.min(y0, y1) > H + 20) continue;
       links.push([boltPts(x0, y0, x1, y1, p.id * 7 + q.id, 9, 7), 900 + p.id * 10 + q.id, true]);
     }
-  if (links.length) drawBolts(links, 0, 0, TETHER_BOLTS, 0.8);
+  if (links.length) drawBolts(links, 0, 0, themeBolts(), 0.8);
 }
 // the RIFT a podium's lightning comes from: a jagged tear in space, blue and
 // glowing (purified)... or red, once the podium is corrupted. strain = how
@@ -5606,7 +5681,7 @@ function drawPodiums(camX, camY) {
     const lit = red ? Math.min(1, (S.t - p.fillT) * 2) : ing ? cc * 0.5 : 0;
     const tRed = j => red || (ing && p.corruptT >= (j + 1) / (p.tethers.length + 1) * podCorruptTime());   // has THIS bolt turned red yet?
     if (lit) { glowAt(x, y - 6, 34, 34, 0.8 * lit); glowAt(x, y - 30, 8, 40, 0.5 * lit); }
-    if (p.state === 'pure') glowAt(x, y - 14, 26, 26, 0.5, PURE_GLOW);
+    if (p.state === 'pure') glowAt(x, y - 14, 26, 26, 0.5, themeGlow());
     // the stone: a wide base, a step, and a top plate (dark grey with light edges)
     g.fillStyle = '#16161a'; g.fillRect(x - 13, y + 2, 26, 6);
     g.fillStyle = '#26262c'; g.fillRect(x - 10, y - 2, 20, 5);
@@ -5635,7 +5710,7 @@ function drawPodiums(camX, camY) {
         if (hash2(i + p.id * 7, Math.floor(S.t * 12), 731) < 0.5) { g.fillStyle = hash2(i, Math.floor(S.t * 12), 732) < 0.5 ? '#fff' : '#8a6cff'; g.fillRect(Math.round(ex + rr(-2, 2)), Math.round(ey + rr(-2, 2)), 1, 1); }   // sparks at the torn end
       } else blue.push([boltPts(stx, sty, sx, sy, i + p.id * 13, 5, 3 + k * 5), id, true]);
     });
-    if (blue.length) { drawBolts(blue, 0, 0, TETHER_BOLTS, Math.min(1, 0.9 + k)); if (k > 0) drawBolts(blue, 0, 0, TETHER_BOLTS, k); }   // (straining: drawn twice = brighter)
+    if (blue.length) { drawBolts(blue, 0, 0, themeBolts(), Math.min(1, 0.9 + k)); if (k > 0) drawBolts(blue, 0, 0, themeBolts(), k); }   // (straining: drawn twice = brighter)
     if (redB.length) drawBolts(redB, 0, 0, RED_BOLTS, ing ? 0.9 : 0.9 * lit + 0.1);
     p.tethers.forEach((tt, j) => drawTetherStar(x + tt.x, y + tt.y + Math.sin(S.t * 1.7 + tt.ph) * 1.5, tt.ph, tRed(j), tt.snapT ? 0 : k));
     if (p.state === 'pure') {
@@ -5676,21 +5751,27 @@ const nullC = document.createElement('canvas'), ncx = nullC.getContext('2d');
 // the Purification's TEXTURE: slow clouds of blue and purple, in a few solid
 // steps (pixel-art shading — no see-through colours), with violet sparkles.
 // Made once (the first time it's needed), 256x256, and it repeats.
-let PURE_PAT = null, PURE_PAT_C = null;
-function purePattern() {
-  if (PURE_PAT) return PURE_PAT;
+// (a sector with theme 'cyan' — LIGHTNING ROUND — gets a CYAN Purification instead of blue-purple)
+const cyanWorld = () => !!(world && world.opt && world.opt.theme === 'cyan');
+const themeBolts = () => cyanWorld() ? CYAN_BOLTS : TETHER_BOLTS;
+const themeGlow = () => cyanWorld() ? GLOW_CYAN : PURE_GLOW;
+const PURE_TILES = {};
+function pureTile() {
+  const th = cyanWorld() ? 'cyan' : 'violet';
+  if (PURE_TILES[th]) return PURE_TILES[th];
   const T = 512, c = makeCanvas(T, T), x = c.getContext('2d'), im = x.createImageData(T, T);   // (512: big enough that huge seas don't show it repeating)
-  const pal = [[18, 12, 58], [30, 22, 96], [44, 36, 136], [66, 52, 180], [100, 80, 230]];
+  const pal = th === 'cyan' ? [[4, 26, 36], [8, 44, 60], [12, 70, 92], [24, 116, 140], [60, 190, 215]] : [[18, 12, 58], [30, 22, 96], [44, 36, 136], [66, 52, 180], [100, 80, 230]];
+  const spark = th === 'cyan' ? [190, 255, 255] : [180, 140, 255];
   for (let y = 0; y < T; y++) for (let xx = 0; xx < T; xx++) {
     const v = tileNoise(xx, y, 128, 800, T) * 0.3 + tileNoise(xx, y, 64, 801, T) * 0.38 + tileNoise(xx, y, 32, 802, T) * 0.21 + tileNoise(xx, y, 16, 803, T) * 0.11;
     let col = pal[Math.min(4, Math.max(0, Math.floor((v - 0.2) * 7)))];
-    if (hash2(xx, y, 804) < 0.004) col = [180, 140, 255];
+    if (hash2(xx, y, 804) < 0.004) col = spark;
     const i = (y * T + xx) * 4; im.data[i] = col[0]; im.data[i + 1] = col[1]; im.data[i + 2] = col[2]; im.data[i + 3] = 255;
   }
   x.putImageData(im, 0, 0);
-  PURE_PAT_C = c;
-  return (PURE_PAT = g.createPattern(c, 'repeat'));
+  return (PURE_TILES[th] = c);
 }
+const purePattern = pureTile;                               // (older name, still used to build it while loading)
 function nullRadius(n, i) { return n.r * n.shape[i % n.shape.length] * (1 + 0.03 * Math.sin(S.t * 0.7 + i * 0.4 + n.ph)); }
 function nullSize(n) { return (1 - smoothstep(clamp(n.burn, 0, 1))) * (n.drop ? smoothstep(n.grow) : 1); }   // (droplets grow from nothing)              // 1 = full ... 0 = burnt away
 function nullPath(ctx, n, ox, oy, k = 1) {
@@ -5729,26 +5810,27 @@ const tmpC = document.createElement('canvas'), tmx = tmpC.getContext('2d');
 const glowS1 = document.createElement('canvas'), gs1 = glowS1.getContext('2d');
 const glowS2 = document.createElement('canvas'), gs2 = glowS2.getContext('2d');
 // the brighter version of the texture (for the band where it's growing)
-let PURE_PAT_HI = null, PURE_HI_C = null, RIM_C = null;
-function purePatternHi() {
-  if (PURE_PAT_HI) return PURE_PAT_HI;
+const HI_TILES = {}, RIM_TILES = {};
+function pureHiTile() {
+  const th = cyanWorld() ? 'cyan' : 'violet';
+  if (HI_TILES[th]) return HI_TILES[th];
   const c = makeCanvas(128, 128), x = c.getContext('2d'), im = x.createImageData(128, 128);
-  const pal = [[60, 46, 170], [88, 70, 215], [120, 100, 245], [160, 140, 255], [215, 200, 255]];
+  const pal = th === 'cyan' ? [[20, 110, 140], [40, 150, 180], [70, 200, 225], [130, 235, 250], [210, 255, 255]] : [[60, 46, 170], [88, 70, 215], [120, 100, 245], [160, 140, 255], [215, 200, 255]];
   for (let y = 0; y < 128; y++) for (let xx = 0; xx < 128; xx++) {
     const v = tileNoise(xx, y, 32, 811) * 0.6 + tileNoise(xx, y, 16, 812) * 0.4;
     const col = pal[Math.min(4, Math.max(0, Math.floor((v - 0.2) * 7)))], i = (y * 128 + xx) * 4;
     im.data[i] = col[0]; im.data[i + 1] = col[1]; im.data[i + 2] = col[2]; im.data[i + 3] = 255;
   }
   x.putImageData(im, 0, 0);
-  PURE_HI_C = c;
-  return (PURE_PAT_HI = g.createPattern(c, 'repeat'));
+  return (HI_TILES[th] = c);
 }
 // the rim's crawling stripes (diagonal, so they crawl along edges at any angle)
 function rimTile() {
-  if (RIM_C) return RIM_C;
-  const c = makeCanvas(12, 12), x = c.getContext('2d'), cols = ['#b48cff', '#6e96ff', '#e0d4ff', '#8a6cff'];
+  const th = cyanWorld() ? 'cyan' : 'violet';
+  if (RIM_TILES[th]) return RIM_TILES[th];
+  const c = makeCanvas(12, 12), x = c.getContext('2d'), cols = th === 'cyan' ? ['#5ff0ff', '#2fd0ff', '#e0ffff', '#0aa8c8'] : ['#b48cff', '#6e96ff', '#e0d4ff', '#8a6cff'];
   for (let y = 0; y < 12; y++) for (let xx = 0; xx < 12; xx++) { x.fillStyle = cols[Math.floor(((xx + y) % 12) / 3)]; x.fillRect(xx, y, 1, 1); }
-  return (RIM_C = c);
+  return (RIM_TILES[th] = c);
 }
 // TEXTURE FILLS, the fast way: instead of filling with a repeating pattern
 // (slow on some computers), each texture is tiled ONCE onto a canvas a bit
@@ -5823,7 +5905,7 @@ function drawNullification(camX, camY) {
     if (c.width !== sw || c.height !== sh) { c.width = sw; c.height = sh; }
     cx.globalCompositeOperation = 'source-over'; cx.clearRect(0, 0, sw, sh); cx.imageSmoothingEnabled = true;
     cx.drawImage(maskC, 0, 0, sw, sh);
-    cx.globalCompositeOperation = 'source-in'; cx.fillStyle = d < 10 ? '#7a5cff' : '#4a3cff'; cx.fillRect(0, 0, sw, sh);
+    cx.globalCompositeOperation = 'source-in'; cx.fillStyle = cyanWorld() ? (d < 10 ? '#2fd0ff' : '#0a80c0') : d < 10 ? '#7a5cff' : '#4a3cff'; cx.fillRect(0, 0, sw, sh);
     g.save(); g.beginPath(); g.rect(B.x - d * 3, B.y - d * 3, B.w + d * 6, B.h + d * 6); g.clip();
     g.imageSmoothingEnabled = true; g.globalCompositeOperation = 'lighter'; g.globalAlpha = a;
     g.drawImage(c, -d * 1.5, -d * 1.5, W + d * 3, H + d * 3);   // (a bit bigger, so the glow spills OUT past the edge)
@@ -5832,11 +5914,11 @@ function drawNullification(camX, camY) {
   // 2+3) THE BODY with its bright growing band: bright everywhere first...
   const ox = Math.round(-camX + S.t * 6), oy = Math.round(-camY + S.t * 3);
   ncx.globalCompositeOperation = 'source-over'; ncx.clearRect(B.x, B.y, B.w, B.h); cpBox(ncx, maskC, B);
-  purePatternHi(); tiledFill(ncx, PURE_HI_C, Math.round(-camX - S.t * 14), Math.round(-camY + S.t * 9), B);
+  tiledFill(ncx, pureHiTile(), Math.round(-camX - S.t * 14), Math.round(-camY + S.t * 9), B);
   // ...then the normal texture over everything except the outer band
   // (the band's width BREATHES, so the bright edge ripples)
   erodeMask(erx, 7 + Math.round(2 + 2 * Math.sin(S.t * 2.3)), B);
-  purePattern(); tiledFill(erx, PURE_PAT_C, ox, oy, B);
+  tiledFill(erx, pureTile(), ox, oy, B);
   ncx.globalCompositeOperation = 'source-over'; cpBox(ncx, eroC, B);
   // 4) THE RIM: the mask minus itself shrunk by 2
   erodeMask(tmx, 2, B);
@@ -5928,6 +6010,7 @@ function drawBarrier(camX, camY) {
 //  THE HELD SHARD + THE SHIELD
 // =====================================================================
 function drawHeld(camX, camY, k) {
+  for (const bk of player.backs) drawShard(bk, bk.cx - camX, bk.cy - camY, ART * 0.7, k, 0.5);   // (the ones behind you: a bit smaller)
   const s = held(); if (!s) return;
   const x = s.cx - camX, y = s.cy - camY, A = s.anim;
   if (A && (A.phase === 'charge' || A.phase === 'burst')) { drawCorruption(s, x, y, -camX, -camY, A); return; }
@@ -6027,7 +6110,7 @@ function drawPurifyHUD(k, late) {
       g.fillRect(14 + i * sw, 23, sw - 2, 6);
     }
     text(String(Math.ceil(S.hp)), 152, 23, 1, S.hp <= 30 ? '#ff0000' : '#8c8c96', 0.03, 'right');
-    const dk = 1 - clamp((S.dashCd || 0) / CFG.dashCooldown, 0, 1), ready = dk >= 1, flash = S.dashReadyT > 0 && Math.floor(S.t * 20) % 2;
+    const dk = 1 - clamp((S.dashCd || 0) / dashCooldown(), 0, 1), ready = dk >= 1, flash = S.dashReadyT > 0 && Math.floor(S.t * 20) % 2;
     g.fillStyle = '#262626'; g.fillRect(14, 36, 66, 2);
     g.fillStyle = ready ? (flash ? '#ff0000' : '#fff') : '#5a5a64'; g.fillRect(14, 36, Math.round(66 * dk), 2);
     text('[SHIFT] DASH', 152, 34, 1, ready ? '#c8c8d0' : '#3c3c42', 0, 'right');
@@ -6042,6 +6125,12 @@ function drawPurifyHUD(k, late) {
     g.fillStyle = '#fff'; g.fillRect(gx + 6, 22, Math.round((gw - 12) * left), 5);
     g.fillStyle = '#16161a'; g.fillRect(gx + 6 + Math.round((gw - 12) * left), 22, (gw - 12) - Math.round((gw - 12) * left), 5);
     diamond(gx + 6, 24, 3, '#ff0000');                       // The Anchor sits at the left end
+  });
+  // --- the COUNTDOWN (LIGHTNING ROUND), under the Purification bar ---
+  if (S.lrTime != null) hudLayer(hudK('front'), 0, -40, () => {
+    const t = Math.ceil(S.lrTime), txt = Math.floor(t / 60) + ':' + String(t % 60).padStart(2, '0'), low = S.lrTime < 30;
+    hudPanel(Math.round(W / 2 - 34), 38, 68, 20, low && Math.floor(S.t * 4) % 2 ? '#ff0000' : '#2fd0ff');
+    text(txt, W / 2, 42, 2, low ? '#ff4040' : '#5ff0ff', low ? 0.2 : 0.03, 'center');
   });
   // --- top-right: the podiums ---
   if (hud('pods')) hudLayer(hudK('pods'), 170, 0, () => {
@@ -6059,6 +6148,14 @@ function drawPurifyHUD(k, late) {
       else { g.fillStyle = mine && Math.floor(S.t * 4) % 2 ? '#ff0000' : '#3c3c42'; g.fillRect(x, 26, 7, 7); g.fillStyle = '#000'; g.fillRect(x + 1, 27, 5, 5); }   // empty (you have its shard)
     }
 
+  });
+  // --- next to it: the SECOND slot (the shard on your back) ---
+  if (hud('held') && player.backs.length) hudLayer(smoothstep(S.heldK || 0), 0, 60, () => {
+    const bx2 = Math.round(W / 2 + 124), by2 = H - 40, q = player.backs[0], n = player.backs.length, red = player.backs.filter(b => !b.pure).length;
+    hudPanel(bx2, by2, n > 1 ? 44 : 30, 28, q.pure ? '#8a6cff' : '#ff0000');
+    drawShard(q, bx2 + 15, by2 + 14, 0.55, 0, 0.4, S.t * 0.5, true);
+    text(n > 1 ? 'X' + (n + 1) : '2', bx2 + (n > 1 ? 41 : 27), by2 + 2, 1, '#8c8c96', 0, 'right');   // how many you carry in total
+    if (n > 1) text(red + 'R', bx2 + 41, by2 + 18, 1, red ? '#ff0000' : '#3c3c42', 0, 'right');      // how many of them are red (corrupted)
   });
   // --- bottom: what you're holding --- (only while you hold something: it slides up from the bottom)
   if (s) S.heldShow = s;
@@ -6089,7 +6186,7 @@ function drawPurifyHUD(k, late) {
   // what you can do right here
   let prompt = '';
   const p = podiumNear();
-  if (!s && podiumNear(q => q.state === 'pure')) prompt = 'HOLD [E]  TEAR IT OFF';
+  if (carried().length < holdCap() && podiumNear(q => q.state === 'pure')) prompt = 'HOLD [E]  TEAR IT OFF';
   if (s && !s.anim) {
     if (s.half !== undefined) prompt = nearAnchor() ? '[E] PUT IT IN THE ANCHOR' : '';
     else if (p && !s.pure && p === s.podium) prompt = '[E] CORRUPT THE PODIUM';
@@ -6116,8 +6213,8 @@ function drawPurifyHUD(k, late) {
     if (!p.seen || p.state === 'corrupt' || (S.tutorial && TUT)) continue;
     const mine = s && s.podium === p;
     edgeArrow(p.x, p.y - 14, (x, y, a) => {
-      const c = Math.cos(a), sn = Math.sin(a), col = p.state === 'corrupting' ? '#ff0000' : mine ? (Math.floor(S.t * 4) % 2 ? '#ff0000' : '#fff') : '#8a6cff';
-      glowAt(x, y, 9, 9, 0.5, p.state === 'pure' && !mine ? PURE_GLOW : GLOW);
+      const c = Math.cos(a), sn = Math.sin(a), col = p.state === 'corrupting' ? '#ff0000' : mine ? (Math.floor(S.t * 4) % 2 ? '#ff0000' : '#fff') : cyanWorld() ? '#5ff0ff' : '#8a6cff';
+      glowAt(x, y, 9, 9, 0.5, p.state === 'pure' && !mine ? themeGlow() : GLOW);
       g.fillStyle = col;
       for (let i = 0; i < 6; i++) for (let w2 = -i; w2 <= i; w2++) if (Math.abs(w2) === i || i === 5) g.fillRect(Math.round(x + c * (2 - i) - sn * w2 * 0.8), Math.round(y + sn * (2 - i) + c * w2 * 0.8), 1, 1);   // an arrowhead
       g.fillRect(Math.round(x - c * 7) - 1, Math.round(y - sn * 7) - 1, 3, 2);                                    // a little podium block behind it
@@ -6139,7 +6236,7 @@ function drawPurifyHUD(k, late) {
     const rn = S.reality ? S.reality.name : '', idx = S.reality ? S.reality.sectors.indexOf(S.sector) + 1 : 1;
     text('REALITY: ' + rn + '   -   SECTOR ' + idx + '   -   ' + diff().name, W / 2, y, 1, '#8c8c96', gl * 0.5, 'center');
     text(areaName(), W / 2, y + 11, 3, '#fff', gl, 'center');
-    g.fillStyle = '#ff0000'; const lw = textWidth(areaName(), 3) * Math.min(1, b * 2); g.fillRect(Math.round(W / 2 - lw / 2), y + 35, Math.round(lw), 1);
+    g.fillStyle = cyanWorld() ? '#5ff0ff' : '#ff0000'; const lw = textWidth(areaName(), 3) * Math.min(1, b * 2); g.fillRect(Math.round(W / 2 - lw / 2), y + 35, Math.round(lw), 1);
     g.globalAlpha = 1;
   }
 }
@@ -6180,7 +6277,7 @@ function frontAt(F, a) {                                   // how far out the da
 }
 function updateFront(dt) {
   const F = world.front; if (!F) return;
-  const T = S.t, speed = CFG.nullSpeed * diff().pure;     // (faster on harder difficulties)
+  const T = S.t, speed = CFG.nullSpeed * diff().pure * (world.opt.pureMul || 1);   // (faster on harder difficulties, and in LIGHTNING ROUND)
   // a new SURGE now and then
   F.nextSurge -= dt;
   if (F.nextSurge <= 0) { F.surges.push({ a: rnd() * 6.2832, w: rr(0.05, 0.14), amp: rr(1.8, 3), t: 0, life: rr(5, 10) }); F.nextSurge = rr(3, 7); }
@@ -6213,7 +6310,7 @@ function updateFront(dt) {
     const a = rnd() * 6.2832, fr = frontAt(F, a) - 3;          // (its root sits right at the wall's edge, so it's connected)
     F.arms.push({ pts: [[Math.cos(a) * fr, Math.sin(a) * fr]], dir: a + Math.PI + rr(-0.5, 0.5), w0: rr(26, 38), len: 0, max: rr(150, 280), depth: 0, nextBranch: rr(40, 80), ph: rnd() * 9 });
   }
-  const grow = CFG.armSpeed * diff().pure * dt;
+  const grow = CFG.armSpeed * diff().pure * (world.opt.pureMul || 1) * dt;
   for (const arm of F.arms) {
     const tip = arm.pts[arm.pts.length - 1];
     // a corrupted podium BURNS any arm that reaches near it (any part of it, not just the tip):
@@ -6237,9 +6334,23 @@ function updateFront(dt) {
     // BRANCH: a new, thinner arm splits off from the tip
     if (arm.len > arm.nextBranch && arm.depth < 2 && F.arms.length < 40) {
       arm.nextBranch += rr(50, 90);
-      F.arms.push({ pts: [[nx, ny]], dir: arm.dir + rr(0.5, 1.0) * (rnd() < 0.5 ? -1 : 1), w0: Math.max(9, arm.w0 * 0.6), len: 0, max: (arm.max - arm.len) * rr(0.5, 0.8) + 40, depth: arm.depth + 1, nextBranch: rr(50, 90), ph: rnd() * 9, root: true });
+      F.arms.push({ pts: [[nx, ny]], dir: arm.dir + rr(0.5, 1.0) * (rnd() < 0.5 ? -1 : 1), w0: Math.max(9, arm.w0 * 0.6), len: 0, max: (arm.max - arm.len) * rr(0.5, 0.8) + 40, depth: arm.depth + 1, nextBranch: rr(50, 90), ph: rnd() * 9, root: true, parent: arm });
     }
     if (Math.hypot(nx, ny) < CFG.nullFail && S.mode === 'play') crackDie('nullified');    // an arm reached The Anchor
+  }
+  // BRANCHES stay ATTACHED: every frame a branch's root is snapped back onto the
+  // arm it grew from (that arm's points move a little as it grows, which used
+  // to leave a gap), and if that arm pulls back, so does the branch
+  for (const br of F.arms) if (br.parent) {
+    const P = br.parent;
+    if (P.gone || !F.arms.includes(P)) { br.parent = null; continue; }      // (swallowed by the wall: its root is in the wall now)
+    if (P.back && !br.back) { br.back = true; br.burn = P.burn; }
+    let best = null, bd = 1e9; const [rx, ry] = br.pts[0];
+    for (let j = 1; j < P.pts.length; j++) {
+      const [ax, ay] = P.pts[j - 1], [bx, by] = P.pts[j], t = segT(rx, ry, ax, ay, bx, by), qx = ax + (bx - ax) * t, qy = ay + (by - ay) * t, d = Math.hypot(qx - rx, qy - ry);
+      if (d < bd) { bd = d; best = [qx, qy]; }
+    }
+    if (best && bd < 40) { br.pts[0][0] = best[0]; br.pts[0][1] = best[1]; }
   }
   // a burning arm takes its BRANCHES with it (they grew out of it, so they'd be left floating)
   for (const arm of F.arms) if (arm.burn) for (const o of F.arms) if (!o.burn && o.root && arm.pts.some(([x, y]) => Math.hypot(o.pts[0][0] - x, o.pts[0][1] - y) < 12)) { o.burn = true; o.back = true; }
@@ -6298,7 +6409,7 @@ function drawFrontRim(camX, camY) {
     const a = i / FRONT_N * 6.2832;
     for (let k = 0; k < 2; k++) {
       const u = (S.t * (0.2 + hash2(i, k, 713) * 0.3) + hash2(i, k, 714)) % 1, d = u * 34;
-      g.globalAlpha = 1 - u; g.fillStyle = hash2(i, k, 715) < 0.3 ? '#fff' : '#b48cff';
+      g.globalAlpha = 1 - u; g.fillStyle = hash2(i, k, 715) < 0.3 ? '#fff' : cyanWorld() ? '#5ff0ff' : '#b48cff';
       g.fillRect(Math.round(x - Math.cos(a) * d), Math.round(y - Math.sin(a) * d), 1, 1);
     }
   }
@@ -6322,7 +6433,7 @@ function drawFrontRim(camX, camY) {
       if (hash2(ai, win, 723) < 0.6) { const a = arm.dir + (hash2(ai, win, 724) - 0.5) * 1.4, l = 10 + hash2(ai, win, 725) * 14; bolts.push([boltPts(tx, ty, tx + Math.cos(a) * l, ty + Math.sin(a) * l, ai * 13 + win, 4, 3), 1600 + ai, true]); }
     }
   });
-  if (bolts.length) drawBolts(bolts, 0, 0, TETHER_BOLTS, 0.85);
+  if (bolts.length) drawBolts(bolts, 0, 0, themeBolts(), 0.85);
 }
 </script>
 <script>
@@ -6609,6 +6720,7 @@ function drawBeams(camX, camY) {
 const FX_COLS = {
   red: { ring: '#ff0000', ring2: '#fff', parts: ['#ff0000', '#ff0000', '#000', '#fff', '#a00000'], light: [1, 0.08, 0.05] },
   pure: { ring: '#8a6cff', ring2: '#fff', parts: ['#8a6cff', '#6e96ff', '#fff', '#b48cff'], light: [0.5, 0.45, 1] },
+  cyan: { ring: '#5ff0ff', ring2: '#fff', parts: ['#5ff0ff', '#2fd0ff', '#fff', '#0a5a70'], light: [0.3, 0.9, 1] },   // a Node blowing up
   dark: { ring: '#c040ff', ring2: '#2a0840', parts: ['#a020ff', '#5a1a8a', '#000', '#f0c0ff'], light: [0.7, 0.1, 1] },   // a DARK enemy turning normal
   mix: { ring: '#ff0000', ring2: '#8a6cff', parts: ['#ff0000', '#8a6cff', '#fff', '#6e96ff', '#000'], light: [1, 0.3, 0.8] },
 };
@@ -6740,8 +6852,7 @@ function mineBlast(m) {
   if (m.dark) { m.dark = false; m.arm = 2; explode(m.x, m.y, 'dark', 1); } else m.gone = true;   // a dark mine only turns NORMAL (and re-arms)
   explode(m.x, m.y, 'pure', 1.4, false);                  // (its own sound, not the usual boom)
   SFX.mineBlast();
-  const s = held();
-  if (s && !s.pure && !s.anim) { s.pure = true; s.charges = 0; }
+  for (const s of carried()) if (!s.pure && !s.anim) { s.pure = true; s.charges = 0; }
   for (const q of world.shards) if (q.state === 'free' && !q.pure && Math.hypot(q.x - m.x, q.y - m.y) < CFG.mineBlast) { q.pure = true; q.charges = 0; }
   if (!S.shield) hurt(dmg, 'mine', false, true);
   chainMines(m);
@@ -6770,10 +6881,11 @@ function mineShot(m) {
   const R = CFG.mineShotBlast, near = (e) => Math.hypot(e.x - m.x, e.y - m.y) < R;
   for (const b of world.beamers) if (!b.dead && near(b) && tryKill(b)) { b.dead = true; b.deadT = 0; explode(b.x, b.y, 'pure', 0.8 + b.kind * 0.3); SFX.beamerExplode(clamp((b.x - player.x) / 200, -1, 1), b.kind); }
   for (const b of world.bashers) if (!b.dead && near(b) && tryKill(b)) { b.dead = true; explode(b.x, b.y, 'pure', 1); }
+  for (const n of world.nodes || []) if (!n.dead && near(n)) killNode(n);
   for (const o of world.mines) if (!o.gone && o !== m && near(o)) o.chain = 0.12;   // other mines nearby go off too (a moment later)
   for (const q of world.shards) if (q.state === 'free' && !q.pure && Math.hypot(q.x - m.x, q.y - m.y) < CFG.mineBlast) { q.pure = true; q.charges = 0; }
   if (Math.hypot(player.x - m.x, player.y - m.y) < CFG.mineBlast) {
-    const s = held(); if (s && !s.pure && !s.anim) { s.pure = true; s.charges = 0; }
+    for (const s of carried()) if (!s.pure && !s.anim) { s.pure = true; s.charges = 0; }
     if (!S.shield) hurt(dmg, 'mine', false, true);
   }
 }
@@ -6896,7 +7008,8 @@ function basherHits(b) {
 }
 // your shard is knocked out of your hands and flies off
 function knockShard(s, a) {
-  player.held = null;
+  if (player.held === s) player.held = null; else dropFromBacks(s);
+  promoteBack();
   s.state = 'free'; s.noPick = true;
   s.x = player.x + Math.cos(a) * rr(45, 70) + rr(-10, 10); s.y = player.y + Math.sin(a) * rr(45, 70) + rr(-10, 10);
   const lim = edgeRadiusAt(world.edge, Math.atan2(s.y, s.x)) - 40, sd = Math.hypot(s.x, s.y); if (sd > lim) { s.x *= lim / sd; s.y *= lim / sd; }
@@ -7045,7 +7158,7 @@ function mawStrike(m) {
 // shield blocks it — but every second of blocking uses up one of its blocks.
 function mawTouch(m, dt) {
   const B = m.bolt; if (!B || S.mode !== 'play') return;
-  const on = [B.main, ...B.branches].some(line => { for (let j = 1; j < line.length; j++) if (segDistB(player.x, player.y, line[j - 1][0], line[j - 1][1], line[j][0], line[j][1]) < 7) return true; return false; });
+  const on = [B.main, ...B.branches].some(line => { for (let j = 1; j < line.length; j++) if (segDistB(player.x, player.y, line[j - 1][0], line[j - 1][1], line[j][0], line[j][1]) < (line === B.main ? CFG.mawWidth : CFG.mawWidth * 0.6)) return true; return false; });   // (WIDE lightning)
   if (!on) return;
   if (rnd() < dt * 30) particles.push({ x: player.x + rr(-5, 5), y: player.y + rr(-5, 5), vx: rr(-60, 60), vy: rr(-60, 60), life: 0.3, max: 0.3, col: rnd() < 0.5 ? '#fff' : '#8a6cff', s: 1, streak: true });
   if (S.shield) {
@@ -7110,6 +7223,15 @@ function drawMawBolts(camX, camY) {
     const red = m.state === 'dying', pal = red ? RED_BOLTS : TETHER_BOLTS;
     const bolts = [[m.bolt.main.map(([x, y]) => [x - camX + rr(-1.5, 1.5), y - camY + rr(-1.5, 1.5)]), 1700 + m.id, true],
       ...m.bolt.branches.map((br, i) => [br.map(([x, y]) => [x - camX, y - camY]), 1710 + m.id * 10 + i, true])];
+    // a WIDE body of lightning first: thick soft strokes along the bolt (the branches a bit thinner), then the crackling bolt on top
+    g.save(); g.globalCompositeOperation = 'lighter'; g.lineCap = 'round'; g.lineJoin = 'round';
+    bolts.forEach(([pts], bi) => {
+      const w = CFG.mawWidth * 2 * (bi ? 0.6 : 1) * (0.85 + 0.15 * Math.sin(S.t * 30 + bi));
+      for (const [lw, col, a] of [[w, red ? '#a00000' : '#3a2cff', 0.35], [w * 0.55, red ? '#ff0000' : '#8a6cff', 0.5], [w * 0.2, '#fff', 0.6]]) {
+        g.globalAlpha = a * f; g.strokeStyle = col; g.lineWidth = lw; g.beginPath(); pts.forEach(([x, y], i) => i ? g.lineTo(x, y) : g.moveTo(x, y)); g.stroke();
+      }
+    });
+    g.restore();
     drawBolts(bolts, 0, 0, pal, f);
     const [ex, ey] = m.bolt.main[m.bolt.main.length - 1]; glowAt(ex - camX, ey - camY, 30, 30, f, red ? GLOW : GLOW_BLUE);
   }
@@ -7143,7 +7265,7 @@ function addEnemies(w, R, E) {
     }
     return null;
   };
-  w.mines = []; w.bashers = []; w.maws = [];
+  w.mines = []; w.bashers = []; w.maws = []; w.nodes = [];
   const MR = diffCount(E.mines), nMines = Array.isArray(MR) ? MR[0] + Math.floor(R() * (MR[1] - MR[0] + 1)) : MR;   // (mines: [from, to], scaled by the difficulty)
   // mines guard the podiums, some are scattered — in sectors with minesInBlobs
   // many hide INSIDE the Purification. Only sectors with mineClumps (PURE SEAS)
@@ -7169,6 +7291,7 @@ function addEnemies(w, R, E) {
     }
   }
   for (let i = 0; i < diffCount(E.bashers); i++) { const p = guardSpot(w, R, i * 2 + 1, 150, 260, w.bashers, 120) || spot(560, 300, w.bashers); if (p) w.bashers.push({ x: p[0], y: p[1], home: p[2] || null, vx: 0, vy: 0, ang: 0, wa: R() * 6.283, r: 11, state: 'wander', t: 0, next: 0, id: i, ghosts: [], tail: Array.from({ length: 9 }, () => ({ x: p[0], y: p[1] })) }); }
+  for (let i = 0; i < diffCount(E.nodes); i++) { const p = spot(420, 230, w.nodes); if (p && !w.podiums.some(q => Math.hypot(q.x - p[0], q.y - p[1]) < CFG.nodeRange + 40)) w.nodes.push({ x: p[0], y: p[1], t: R() * 9, id: i, near: 0, zap: false }); }   // NODES (nodes.js) — never so close to a podium that it zaps you there
   for (let i = 0; i < diffCount(E.maws); i++) { const p = spot(520, 500, w.maws); if (p) w.maws.push({ x: p[0], y: p[1], ang: 0, wa: R() * 6.283, r: 24, state: 'idle', t: 0, next: 0, fin: R() * 6, id: i, bolt: null }); }
 }
 </script>
@@ -7321,6 +7444,80 @@ function drawDanger(camX, camY) {
       else { g.fillStyle = '#f0c0ff'; g.fillRect(Math.round(bx) - 1, Math.round(by), 1, 1); g.fillRect(Math.round(bx) + 2, Math.round(by), 1, 1); }   // pop!
     }
   }
+}
+</script>
+<script>
+// V0ID3D — nodes.js: NODES (LIGHTNING ROUND) — cyan crystal pylons that zap you with lightning when you come close
+"use strict";
+
+// =====================================================================
+//  NODES: they stand still. Come within CFG.nodeRange and a bolt of cyan
+//  lightning locks onto you: CFG.nodeDps damage per second for as long as
+//  you stay in range (your shield blocks it — using up one block for every
+//  second it blocks). A faint ring shows their reach when you're near.
+//  They're destroyed by a corrupted podium's blast or a mine trick shot.
+// =====================================================================
+function updateNodes(dt) {
+  if (!world.nodes) return;
+  const safeP = Math.hypot(player.x, player.y) < CFG.beamerSafe - 30;   // (never near The Anchor)
+  for (const n of world.nodes) {
+    n.t += dt;
+    let d = Math.hypot(player.x - n.x, player.y - n.y);
+    const was = n.zap;
+    // they CREEP toward you, very slowly (never into The Anchor's light, never out of the map)
+    if (d < 450 && d > 30 && !safeP) {
+      const sp = CFG.nodeFollow * diff().speed * dt, nx = n.x + (player.x - n.x) / d * sp, ny = n.y + (player.y - n.y) / d * sp;
+      if (Math.hypot(nx, ny) > CFG.beamerSafe + 20 && Math.hypot(nx, ny) < edgeRadiusAt(world.edge, Math.atan2(ny, nx)) - 80) { n.x = nx; n.y = ny; d = Math.hypot(player.x - n.x, player.y - n.y); }
+    }
+    n.near = clamp(1 - (d - CFG.nodeRange) / 120, 0, 1);
+    n.zap = d < CFG.nodeRange && !safeP && S.mode === 'play';
+    if (!n.zap) { n.touch = 0; n.blockT = 0; continue; }
+    const pan = clamp((n.x - player.x) / 200, -1, 1);
+    if (!was) SFX.snap(pan);                                 // (it LOCKS ON)
+    n.crackT = (n.crackT || 0) - dt; if (n.crackT <= 0) { n.crackT = rr(0.05, 0.11); SFX.crackle(0.6, pan); }
+    if (rnd() < dt * 25) particles.push({ x: player.x + rr(-5, 5), y: player.y + rr(-5, 5), vx: rr(-60, 60), vy: rr(-60, 60), life: 0.3, max: 0.3, col: rnd() < 0.5 ? '#fff' : '#5ff0ff', s: 1, streak: true });
+    if (S.shield) {
+      n.blockT = (n.blockT || 0) - dt;
+      if (n.blockT <= 0) { n.blockT = 1; shieldBlock(); SFX.reflect(); burstParticles(player.x, player.y, 16, 1, ['#5ff0ff', '#fff', '#2fd0ff']); }
+      continue;
+    }
+    n.touch = (n.touch || 0) + CFG.nodeDps * dt;
+    while (n.touch >= CFG.nodeDps / 4) { n.touch -= CFG.nodeDps / 4; hurt(CFG.nodeDps / 4, 'node', true); if (S.mode !== 'play') return; }
+  }
+  world.nodes = world.nodes.filter(n => !n.dead);
+}
+function killNode(n) { n.dead = true; explode(n.x, n.y, 'cyan', 1.1); }
+
+function drawNodes(camX, camY) {
+  if (!world.nodes) return;
+  for (const n of world.nodes) {
+    const x = Math.round(n.x - camX), y = Math.round(n.y - camY + Math.sin(n.t * 2 + n.id) * 1.5);
+    if (x < -CFG.nodeRange || x > W + CFG.nodeRange || y < -CFG.nodeRange || y > H + CFG.nodeRange) continue;
+    const hot = n.zap ? 1 : n.near * 0.5;
+    glowAt(x, y, 18 + hot * 14, 18 + hot * 14, 0.5 + hot * 0.5, GLOW_CYAN);
+    // its REACH: a faint ring of dots when you're getting close
+    if (n.near > 0) {
+      g.globalAlpha = n.near * 0.6; g.fillStyle = n.zap ? '#5ff0ff' : '#1a7080';
+      for (let i = 0; i < 48; i++) { if ((i + Math.floor(n.t * 8)) % 4 === 0) continue; const a = i / 48 * 6.2832 - n.t * 0.4; g.fillRect(Math.round(x + Math.cos(a) * CFG.nodeRange), Math.round(y + Math.sin(a) * CFG.nodeRange), 1, 1); }
+      g.globalAlpha = 1;
+    }
+    // the pylon: a tall cyan crystal on a dark base, with a ring turning round it
+    g.fillStyle = '#022028'; g.fillRect(x - 6, y + 5, 12, 3);
+    g.fillStyle = '#022028'; g.beginPath(); g.moveTo(x, y - 13); g.lineTo(x + 6, y); g.lineTo(x, y + 6); g.lineTo(x - 6, y); g.closePath(); g.fill();
+    g.strokeStyle = hot > 0.5 ? '#e0ffff' : '#2fd0ff'; g.lineWidth = 1; g.stroke();
+    diamond(x, y - 2, 2.5 + hot * 1.5, hot > 0.5 && Math.floor(S.t * 20) % 2 ? '#fff' : '#5ff0ff');
+    g.fillStyle = hot > 0.5 ? '#fff' : '#2fd0ff'; dotSquare(x, y - 2, 11 + Math.sin(n.t * 3) * 1, n.t * (1 + hot * 6) + n.id, 16, 1, 3, Math.floor(n.t * 8));
+    // little sparks jumping off the tip
+    if (hash2(n.id, Math.floor(S.t * 12), 1601) < 0.3 + hot * 0.5) { g.fillStyle = '#e0ffff'; g.fillRect(x + ri(-3, 3), y - 14 + ri(-3, 2), 1, 1); }
+  }
+}
+// the bolts (drawn on top of almost everything, like the Thundermaw's)
+function drawNodeBolts(camX, camY) {
+  if (!world.nodes) return;
+  const bolts = [];
+  for (const n of world.nodes) if (n.zap) bolts.push([boltPts(n.x - camX, n.y - 14 - camY + Math.sin(n.t * 2 + n.id) * 1.5, player.x - camX, player.y - camY, n.id * 11, 8, 6), 2400 + n.id, true]);
+  if (bolts.length) drawBolts(bolts, 0, 0, CYAN_BOLTS, 0.95);
+  for (const n of world.nodes) if (n.zap) glowAt(player.x - camX, player.y - camY, 16, 16, 0.7, GLOW_CYAN);
 }
 </script>
 <script>
@@ -7882,12 +8079,14 @@ function gatherLights(camX, camY) {
   addLight(-camX, -camY, (240 + stab * 70 + beat * 25) * Math.max(0.2, ak), (0.8 + world.anchorPulse * 0.6 + beat * 0.2) * ak, 1, 0.1, 0.07);
   // shards lying around
   for (const s of world.shards) if (s.state === 'free') addLight(s.x - camX, s.y - camY, 46, 0.55, ...(s.pure ? [0.45, 0.4, 1] : [1, 0.05, 0.05]));
+  if (player && player.backs) for (const b of player.backs.slice(0, 4)) addLight(b.cx - camX, b.cy - camY, 50, 0.4, ...(b.pure ? [0.45, 0.4, 1] : [1, 0.05, 0.05]));   // (the first few behind you)
   if (player && player.held) addLight(player.held.cx - camX, player.held.cy - camY, 70, 0.6, ...(player.held.pure ? [0.45, 0.4, 1] : [1, 0.05, 0.05]));
   for (const p of world.podiums) if (p.state === 'corrupt') addLight(p.x - camX, p.y - camY, 120, 0.9, 1, 0.05, 0.05); else if (p.state === 'corrupting') { const c = p.corruptT / podCorruptTime(); addLight(p.x - camX, p.y - 14 - camY, 70 + c * 50, 0.6 + c * 0.3, 0.45 + c * 0.55, 0.4 - c * 0.35, 1 - c * 0.95); } else if (p.state === 'pure') addLight(p.x - camX, p.y - 14 - camY, 70, 0.5, 0.45, 0.4, 1);
   if (world.front) for (let i = 0; i < FRONT_N; i += 8) { const a = i / FRONT_N * 6.2832; addLight(Math.cos(a) * world.front.r[i] - camX, Math.sin(a) * world.front.r[i] - camY, 120, 0.25, 0.5, 0.4, 1); }
   for (const n of world.nulls) if (n.burn < 1) addLight(n.x - camX, n.y - camY, n.r * 1.5 * (1 - n.burn), 0.3, 0.5, 0.4, 1);   // (a blue-purple glow)
   for (const m of world.mines || []) addLight(m.x - camX, m.y - camY, 50 + m.near * 30, 0.4 + m.near * 0.4, 0.5, 0.4, 1);
   for (const b of world.bashers || []) addLight(b.x - camX, b.y - camY, b.state === 'bash' ? 110 : 60, b.state === 'bash' ? 0.9 : 0.4, 0.5, 0.4, 1);
+  for (const n of world.nodes || []) addLight(n.x - camX, n.y - camY, n.zap ? 160 : 70, n.zap ? 1 : 0.45, 0.25, 0.85, 1);   // Nodes: cyan
   for (const m of world.maws || []) addLight(m.x - camX, m.y - camY, m.bolt ? 220 : 90, m.bolt ? 1.2 : 0.5, ...(m.state === 'dying' ? [1, 0.05, 0.05] : [0.5, 0.4, 1]));
   for (const f of FX.list) { const u = f.t / f.life, c = FX_COLS[f.kind].light; addLight(f.x - camX, f.y - camY, 150 * f.size, (1 - u) * 1.6, c[0], c[1], c[2]); }   // explosions light everything up
   for (const b of world.beamers) if (!b.dead) addLight(b.x - camX, b.y - camY, b.state === 'fire' ? 150 : 60, b.state === 'fire' ? 1 : 0.4, 0.5, 0.4, 1);   // (purified enemies: blue)
@@ -8694,7 +8893,16 @@ const REALITIES = [
       dangerBlobs: { count: [2, 5], r: [55, 95] },            // 2-5 of them                 // dark purple pools: they hurt YOU, and turn enemies DARK (danger.js)
       beamers: { single: 3, dual: 1, triple: 0 },
       enemies: { mines: [10, 16], bashers: 3, maws: 0, minesInDanger: true } },
-    { name: '???', open: false },
+    { name: 'LIGHTNING ROUND', open: true, shards: 10, icon: 'lightning', theme: 'cyan', mapScale: 1.1, music: 'lightning', holdCap: 10,   // 10 podiums, everything CYAN, its own intense music, carry up to 10 shards
+      rifts: false, tears: false, locators: false, portal: false, farRifts: false, farLightning: false,
+      podiums: true, front: true,
+      pureMul: 1.8,                                          // the Purification creeps in MUCH faster...
+      timer: 300, timerBrutal: 240,                          // ...and you have 5 minutes (4 on BRUTAL)
+      dashCd: 2, youMul: 1.12,                               // a quicker dash (not on BRUTAL) and you're a bit faster
+      allPodiumsSeen: true,                                  // arrows point to EVERY podium from the start
+      blobs: { count: 5, r: [80, 120], parts: [1, 2] },
+      beamers: { single: 2, dual: 1, triple: 0 },
+      enemies: { mines: [8, 12], bashers: 2, maws: 3, nodes: 6 } },   // Thundermaws + the new NODES (nodes.js)
     { name: '???', open: false },
   ] },
   { name: '???', open: false },
@@ -8709,10 +8917,6 @@ const REALITIES = [
 const TEST_VERSION = BUILD_ID === 'dev';
 function beatenList() { try { return JSON.parse(localStorage.getItem('v0id3d_beaten') || '[]'); } catch { return []; } }
 function markBeaten(name) { try { const b = beatenList(); if (!b.includes(name)) { b.push(name); localStorage.setItem('v0id3d_beaten', JSON.stringify(b)); } } catch {} }
-// a reality is BEATEN when every sector in it (that exists) has been corrupted
-function realityBeaten(r) { const b = beatenList(); return r.sectors.filter(s => s.open).every(s => b.includes(s.name)); }
-// the next sector to play in a reality: the first one you haven't beaten
-function nextUnbeaten(r) { const b = beatenList(); return r.sectors.find(s => s.open && !b.includes(s.name)) || r.sectors[0]; }
 function cardOpen(it, i) {
   if (!it.open) return false;                              // (doesn't exist yet)
   if (S.mode === 'realities' || S.mode === 'difficulty' || TEST_VERSION || i === 0) return true;
@@ -8830,10 +9034,7 @@ function menuPick(i) {
   SFX.menuPick();
   if (S.mode === 'realities') toDifficulty(it);
   else if (S.mode === 'difficulty') {
-    S.diff = it;
-    // you only get to PICK a sector once you've beaten the whole reality — until then you play them in order
-    if (TEST_VERSION || realityBeaten(S.reality)) toSectors(S.reality);
-    else { const sec = nextUnbeaten(S.reality); fadeTo(() => startSector(sec), 0.5); }
+    S.diff = it; toSectors(S.reality);                    // then pick the sector (the ones you've unlocked)
   }
   else startSector(it);
 }
@@ -8890,6 +9091,16 @@ function diffIcon(cx, cy, i, sel) {
   }
   if (i === 3 && rnd() < 0.15) { g.fillStyle = '#ff0000'; g.fillRect(Math.round(cx - 24 + rr(-4, 4)), Math.round(cy + rr(-8, 8)), 48, 1); }
 }
+// LIGHTNING ROUND's picture: a cyan Node shooting a bolt, with a little clock
+function sectorIconLightning(cx, cy, sel) {
+  glowAt(cx - 8, cy, 26, 24, 0.5, GLOW_CYAN);
+  drawBolts([[boltPts(cx - 10, cy - 8, cx + 16, cy + 8, 77, 6, 5), 2500, true]], 0, 0, CYAN_BOLTS, 0.9);
+  g.fillStyle = '#022028'; g.beginPath(); g.moveTo(cx - 10, cy - 18); g.lineTo(cx - 4, cy - 6); g.lineTo(cx - 10, cy); g.lineTo(cx - 16, cy - 6); g.closePath(); g.fill();
+  g.strokeStyle = sel ? '#fff' : '#5ff0ff'; g.lineWidth = 1; g.stroke();
+  g.strokeStyle = '#5ff0ff'; g.beginPath(); g.arc(cx + 14, cy - 10, 6, 0, 6.2832); g.stroke();
+  const a = S.t * 3; g.beginPath(); g.moveTo(cx + 14, cy - 10); g.lineTo(cx + 14 + Math.cos(a) * 4, cy - 10 + Math.sin(a) * 4); g.stroke();   // the clock hand
+  diamond(cx + 16, cy + 8, 3, sel ? '#ff0000' : '#fff');
+}
 // a little pixel PADLOCK (for locked cards)
 function padlock(cx, cy, col) {
   g.fillStyle = col;
@@ -8902,7 +9113,6 @@ function drawMenu() {
   const reals = S.mode === 'realities', diffs = S.mode === 'difficulty';
   text(reals ? 'CHOOSE A REALITY' : diffs ? 'CHOOSE A DIFFICULTY' : 'CHOOSE A SECTOR', W / 2, 34, 3, '#fff', 0.15, 'center');
   text(reals ? 'WHERE WILL YOU BE SENT?' : 'REALITY: ' + S.reality.name + (diffs ? '' : '   -   ' + diff().name), W / 2, 62, 1, '#ff0000', 0.05, 'center');
-  if (diffs && !TEST_VERSION && !realityBeaten(S.reality)) text('BEAT EVERY SECTOR OF ' + S.reality.name + ' TO CHOOSE SECTORS FREELY', W / 2, H - 40, 1, '#5a5a64', 0, 'center');
   for (const c of menuCards()) {
     const sel = c.i === S.menuSel, open = cardOpen(c.it, c.i);
     const sh = S.menuShake && S.menuShake.i === c.i ? Math.round(Math.sin(S.menuShake.t * 60) * 3 * S.menuShake.t / 0.35) : 0;
@@ -8921,17 +9131,12 @@ function drawMenu() {
       else if (c.it.icon === 'podium') sectorIconPodium(cx, cy, sel);
       else if (c.it.icon === 'seas') sectorIconSeas(cx, cy, sel);
       else if (c.it.icon === 'danger') sectorIconDanger(cx, cy, sel);
+      else if (c.it.icon === 'lightning') sectorIconLightning(cx, cy, sel);
       else { glowAt(cx, cy, 26, 26, 0.35); g.fillStyle = '#ff0000'; dotSquare(cx, cy, 22, S.t * 0.6, 40, 1, 4, Math.floor(S.t * 6));
              g.fillStyle = '#fff'; dotSquare(cx, cy, 13, -S.t * 0.9, 16, 1); diamond(cx, cy, 4, '#fff'); }
       const nm = c.it.name, sc = textWidth(nm, 2) <= c.w - 10 ? 2 : 1;
       text(nm, cx, y + c.h - (sc === 2 ? 26 : 20), sc, sel ? '#fff' : '#c8c8d0', sel ? 0.12 : 0.03, 'center');
-    } else if (c.it.open) {
-      // it EXISTS but you haven't earned it yet: its name, dim, and what to do
-      padlock(x + c.w / 2, y + 52, '#5a5a64');
-      const nm = c.it.name, sc = textWidth(nm, 2) <= c.w - 10 ? 2 : 1;
-      text(nm, x + c.w / 2, y + c.h - (sc === 2 ? 30 : 24), sc, '#3c3c42', 0, 'center');
-      text('BEAT SECTOR ' + c.i + ' FIRST', x + c.w / 2, y + c.h - 10, 1, '#5a5a64', 0, 'center');
-    } else {
+    } else {                                                // locked (or not made yet): just ??? — no name
       padlock(x + c.w / 2, y + 52, '#3c3c42');
       text('???', x + c.w / 2, y + c.h - 26, 2, '#3c3c42', 0, 'center');
       text('LOCKED', x + c.w / 2, y + c.h - 10, 1, '#3c3c42', 0, 'center');
@@ -9352,7 +9557,7 @@ function render() {
   }
   for (const f of flyers) drawShard(f.s, f.x - camX, f.y - camY, ART, k);
   drawBeamers(camX, camY);
-  if (world.mines) { drawMines(camX, camY); drawBashers(camX, camY); drawMaws(camX, camY); }
+  if (world.mines) { drawMines(camX, camY); drawBashers(camX, camY); drawMaws(camX, camY); drawNodes(camX, camY); }
   if (player && S.mode !== 'dead') {
     for (const s of player.carried) drawShard(s, s.cx - camX, s.cy - camY, ART, k, 0.6);
     if (S.mode === 'play' || S.mode === 'paused' || S.mode === 'clear' || S.mode === 'cracking' || S.mode === 'warping') { if (!S.spawn || S.spawn.t >= SPAWN.emerge) drawPlayer(camX, camY, k); }
@@ -9361,6 +9566,7 @@ function render() {
   }
   drawBeams(camX, camY);                           // (on top of the darkness: you see them coming)
   if (world.maws) drawMawBolts(camX, camY);
+  if (world.nodes) drawNodeBolts(camX, camY);
   drawSpikes(camX, camY);
   drawSuck(camX, camY);                            // remains being sucked into The Anchor
   drawFX(camX, camY);                              // EXPLOSIONS
