@@ -118,7 +118,8 @@ const CFG = {
   mawSight: 230,          // it notices you this close...
   mawRange: 190,          // ...and opens its mouth this close
   mawReach: 230,          // how far its lightning goes
-  mawWidth: 18,           // how far from the middle of a Thundermaw's lightning it still hits you (it's drawn this wide too)
+  mawWidth: 18,
+  mawGrow: 0.3,           // how long its lightning takes to grow to full length (seconds)           // how far from the middle of a Thundermaw's lightning it still hits you (it's drawn this wide too)
   mawDps: 20,             // touching a Thundermaw's lightning hurts this much PER SECOND...
   mawZap: [2, 5],         // ...and its lightning lasts this long (seconds, random between the two)
   armSpeed: 16,           // how fast the Purification's ARMS grow (pixels per second)
@@ -133,7 +134,7 @@ const CFG = {
 //  reloads into the new version. build-site.js stamps a real number in here
 //  for the website; 'dev' (your own copy) never checks.
 // =====================================================================
-const BUILD_ID = '20261011132412';
+const BUILD_ID = '20261011143450';
 // THE PUBLIC LOCK: true = the website/app won't start, it just says
 // "NO IVAR. NO." (your own 'dev' copy always plays). false = everyone can play.
 const PUBLIC_LOCKED = false;
@@ -813,6 +814,29 @@ function swoop(dur, f, endMult, type, cutoff, vol, pan = 0) {
   gn.gain.setValueAtTime(vol, t + dur * 0.7); gn.gain.linearRampToValueAtTime(0, t + dur);
   o.connect(lp).connect(gn).connect(p).connect(AU.master); o.start(t); o.stop(t + dur + 0.02);
 }
+// a CREATURE CRY: three slightly out-of-tune saw waves WOBBLING (vibrato),
+// their pitch climbing and falling along a contour (a list of pitches spread
+// over the cry), squashed by distortion and pushed through a "throat" (a
+// bandpass filter that follows the pitch) — plus a breathy hiss on top.
+function cry(dur, contour, vol, pan = 0, o = {}) {
+  const ctx = AU.ctx; if (!ctx) return;
+  const t = ctx.currentTime + (o.delay || 0), at = i => t + dur * i / (contour.length - 1);
+  const p = ctx.createStereoPanner(); p.pan.value = pan;
+  const bp = ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.Q.value = o.q || 2.5;
+  const sh = distortion(o.grit || 4), env = ctx.createGain();
+  env.gain.setValueAtTime(0, t); env.gain.linearRampToValueAtTime(vol, t + Math.min(0.06, dur * 0.2)); env.gain.setValueAtTime(vol, t + dur * 0.6); env.gain.exponentialRampToValueAtTime(0.001, t + dur);
+  const lfo = ctx.createOscillator(), lg = ctx.createGain(); lfo.frequency.value = o.wob || 18; lg.gain.value = contour[0] * (o.wobAmt || 0.04); lfo.connect(lg);
+  for (const det of [-14, 0, 13]) {
+    const os = ctx.createOscillator(); os.type = o.type || 'sawtooth'; os.detune.value = det;
+    contour.forEach((f, i) => i ? os.frequency.exponentialRampToValueAtTime(f, at(i)) : os.frequency.setValueAtTime(f, t));
+    lg.connect(os.frequency); os.connect(sh); os.start(t); os.stop(t + dur + 0.05);
+  }
+  contour.forEach((f, i) => i ? bp.frequency.exponentialRampToValueAtTime(f * 2, at(i)) : bp.frequency.setValueAtTime(f * 2, t));
+  const lv = ctx.createGain(); lv.gain.value = 0.85;
+  sh.connect(bp).connect(lv).connect(env).connect(p).connect(AU.master);
+  lfo.start(t); lfo.stop(t + dur + 0.05);
+  burst(dur * 0.8, vol * 1.2, contour[0] * 3, 0.7, false, pan, contour[contour.length - 1] * 2, o.delay || 0);   // the breath
+}
 // a deep boom: a sine wave that drops in pitch fast
 function thump(vol = 0.5, f0 = 120, f1 = 38, dur = 0.4, delay = 0) {
   const ctx = AU.ctx; if (!ctx) return;
@@ -994,8 +1018,7 @@ const SFX = {
   // crash of breaking glass, and dozens of shards tinkling as they scatter
   // MORE DEATH: a deep impact, a rising swell sucking everything in until the
   // glass bursts, a sub boom, glass whooshing past your ears (left and right),
-  // a shimmering "purified" chord as the light bursts out, and a low drone
-  // sinking into the black. (Timed to CRACK in glass.js.)
+  // and a low drone sinking into the black. (Timed to CRACK in glass.js.)
   deathExtra() {
     const ctx = AU.ctx; if (!ctx) return;
     const t = ctx.currentTime, T = CRACK;
@@ -1008,7 +1031,6 @@ const SFX = {
     sw.connect(lp).connect(sg).connect(AU.master); sw.start(t); sw.stop(t + T.drop + 0.05);
     thump(1, 60, 22, 1.4, T.drop);                                                    // BOOM
     for (let i = 0; i < 8; i++) burst(0.3, 0.16, rr(700, 1400), 2, false, i % 2 ? rr(0.4, 1) : rr(-1, -0.4), rr(4000, 8000), T.drop + 0.06 + i * rr(0.05, 0.12));   // glass whooshing past
-    for (const f of [523, 659, 784, 1046, 1318, 1568]) bell(f, 0.035, 2.4, rr(-0.6, 0.6), T.drop + 0.04 + rnd() * 0.08, 0.7);   // the purified chord
     const dr = ctx.createOscillator(), dg = ctx.createGain(), t2 = t + T.lens - 0.3;      // the drone sinking into the black
     dr.type = 'sine'; dr.frequency.setValueAtTime(90, t2); dr.frequency.exponentialRampToValueAtTime(38, t2 + 1.4);
     dg.gain.setValueAtTime(0.0001, t2); dg.gain.exponentialRampToValueAtTime(0.25, t2 + 0.2); dg.gain.exponentialRampToValueAtTime(0.0001, t2 + 1.5);
@@ -1314,6 +1336,33 @@ const SFX = {
   darken(pan) { swoop(0.5, 220, 0.4, 'sawtooth', 700, 0.08, pan); burst(0.4, 0.1, 900, 1.5, true, pan, 300); },
   // a dark enemy is "killed" and turns normal: a crack and a falling chime
   undark(pan) { burst(0.15, 0.3, 2500, 1, false, pan, 600); thump(0.5, 150, 50, 0.3); bell(1568, 0.04, 0.8, pan); bell(1047, 0.04, 0.9, pan, 0.06); },
+  // FENIX + your sword
+  slash() { burst(0.12, 0.25, 2500, 1.2, false, 0, 600); swoop(0.15, 900, 0.4, 'sawtooth', 2500, 0.05); },
+  beamShot() { swoop(0.2, 1400, 0.25, 'square', 4000, 0.07); burst(0.15, 0.15, 3000, 1, true, 0, 800); },
+  gooSplat() { burst(0.12, 0.25, 500, 2, true, 0, 200); thump(0.3, 120, 50, 0.15); },
+  bossHit() { thump(0.6, 160, 50, 0.3); burst(0.1, 0.35, 3500, 1, false); bell(1760, 0.03, 0.4); },
+  clank() { bell(2400, 0.04, 0.3); burst(0.05, 0.2, 5000, 2, false); },
+  featherVolley() { for (let i = 0; i < 6; i++) burst(0.08, 0.12, rr(3000, 6000), 2, false, rr(-0.8, 0.8), 0, i * 0.04); },
+  chainLatch() { for (let i = 0; i < 4; i++) { bell(rr(500, 900), 0.06, 0.6, rr(-0.8, 0.8), i * 0.05, 0.4); burst(0.06, 0.3, 2000, 3, true, rr(-0.8, 0.8), 0, i * 0.05); } thump(0.7, 90, 35, 0.4); },
+  // a bird's SCREECH, made of electricity (k = how big)
+  // ---- FENIX ----
+  fenixScreech(k = 1, pan = 0) { cry(0.6 + k * 0.4, [900, 1750, 1300, 650], 0.1 + k * 0.12, pan, { wob: 22 }); cry(0.6 + k * 0.4, [450, 880, 640, 300], 0.06 + k * 0.08, pan, { type: 'square', grit: 6, wob: 21 }); },
+  fenixRoar() {                                  // a growl from deep down that RISES into a scream
+    cry(1.8, [95, 140, 120, 70], 0.3, 0, { wob: 9, wobAmt: 0.12, grit: 8, q: 1.2 });
+    cry(1.4, [700, 1900, 1500, 500], 0.22, 0, { wob: 24, delay: 0.25 }); cry(1.4, [350, 950, 760, 250], 0.12, 0, { type: 'square', wob: 23, delay: 0.25 });
+    thump(1, 90, 28, 1.3); burst(1.5, 0.35, 300, 0.5, true, 0, 80);
+  },
+  fenixCharge(dur, pan = 0) {                    // electricity gathering in its wings, whining higher and higher
+    swoop(dur, 220, 7, 'sawtooth', 3000, 0.045, pan); swoop(dur, 223, 7.2, 'square', 1800, 0.025, -pan);
+    for (let i = 0; i < 10; i++) burst(0.03, 0.08 + i * 0.02, rr(3000, 7000), 3, true, rr(-0.7, 0.7), 0, i * dur / 10);
+  },
+  wingBlast(pan = 0) { burst(0.7, 0.5, 2500, 0.4, true, pan, 250); thump(0.65, 210, 32, 0.6); swoop(0.35, 3000, 0.08, 'square', 6000, 0.08, pan); burst(0.15, 0.4, 7000, 1, false, pan); },
+  wingBeat(k = 1, pan = 0) { burst(0.4, 0.09 * k, 250, 0.8, false, pan, 900); thump(0.14 * k, 70, 38, 0.25); },
+  fenixSnap() { burst(0.06, 0.7, 4000, 1.5, true); thump(0.8, 240, 50, 0.25); blip([1400, 500], 0.03, 0.07, 'square'); cry(0.4, [1200, 1800, 900], 0.15, 0, { wob: 30 }); },
+  fenixHurt() { cry(0.35, [1500, 2100, 900], 0.12, rr(-0.3, 0.3), { wob: 32 }); },
+  stormCall() { cry(1.2, [600, 1500, 1100], 0.18, 0, { wob: 20 }); thump(0.7, 60, 25, 1.8); burst(2.2, 0.35, 180, 0.5, true, 0, 60); },
+  fenixDeath() { cry(3.3, [1500, 2300, 1000, 160], 0.26, 0, { wob: 12, wobAmt: 0.08 }); cry(3.3, [200, 260, 120, 45], 0.25, 0, { wob: 7, wobAmt: 0.15, grit: 9, q: 1.1 }); },
+  screech(k = 1) { swoop(0.5 + k * 0.3, 1800, 0.45, 'sawtooth', 5000, 0.05 + k * 0.06); swoop(0.4 + k * 0.3, 2400, 0.55, 'square', 6000, 0.03 + k * 0.03); burst(0.4 + k * 0.3, 0.15 + k * 0.15, 3000, 0.8, true, 0, 1200); },
   mineBlast() {
     const ctx = AU.ctx; if (!ctx) return;
     thump(0.8, 160, 45, 0.5);
@@ -1644,7 +1693,8 @@ function musicTick() {
   portalMusicTick();
   // which song: in the soundtrack player, the one you picked; on the menus, the menu theme
   const want = S.mode === 'soundtrack' ? JUKE.playing
-    : S.mode === 'title' || S.mode === 'realities' || S.mode === 'difficulty' || S.mode === 'sectors' || S.mode === 'settings' ? 'menu'
+    : S.mode === 'title' ? 'menu'
+    : S.mode === 'realities' || S.mode === 'difficulty' || S.mode === 'sectors' || S.mode === 'settings' || S.mode === 'tutask' ? 'portal'   // (BETWEEN: on every menu after the main one)
     : S.sector && S.sector.music && (S.mode === 'play' || S.mode === 'paused' || S.mode === 'clear') ? S.sector.music : null;   // (a sector's own music)
   if (want !== MUS.track) {
     // in the soundtrack player, switching songs CUTS the old one cleanly
@@ -1901,6 +1951,39 @@ function songLightning(step, t, sd) {
   if (bar % 8 === 0 && i === 0) sCrash(t, 0.1);
 }
 
+// 12 — FENIX: THE STORM BIRD. Epic boss music. WAR DRUMS (big low toms in a
+// galloping pattern) over a kick and a HUGE snare, a growling distorted bass
+// riding eighth notes, brass-like chord stabs in a "da-da-DA" rhythm, a dark
+// choir underneath — and in the second half a heroic lead over a double-kick
+// rumble. D minor: Dm Dm Bb C | Dm Dm Bb A (the A major is what sounds EPIC).
+const SB_ROOTS = [38, 38, 34, 36, 38, 38, 34, 33], SB_MINOR = [1, 1, 0, 0, 1, 1, 0, 0];
+const SB_TOMS = [0, -1, 1, 1, -1, -1, 0, -1, 0, -1, 1, 1, -1, -1, 0, -1];   // 0 = low tom, 1 = high tom
+const SB_BASS = [0, 0, 12, 0, 0, 7, 0, 12, 0, 0, 12, 0, 0, 7, 10, 12];
+const SB_LEAD = [3, -1, -1, 2, 3, -1, 4, -1, 2, -1, -1, 1, 2, -1, 0, -1];   // which chord note (0-4) the lead sings
+function songStormbird(step, t, sd) {
+  const i = step % 16, bar = Math.floor(step / 16) % 16, ri = bar % 8, root = SB_ROOTS[ri], m = SB_MINOR[ri];
+  const intro = bar < 2, climax = bar >= 8, fill = bar % 4 === 3 && i >= 12;
+  const chord = [root + 24, root + 27 + (m ? 0 : 1), root + 31, root + 36, root + 39 + (m ? 0 : 1)];   // root, 3rd, 5th, octave, 3rd up
+  // THE DRUMS
+  if (!fill) { if (i === 0 || i === 7 || i === 8 || (climax && i === 10)) sKick(t, 0.62, 150, 36, 0.36); }
+  if (climax && !fill) sKick(t, 0.22, 120, 50, 0.1);                                                                   // double-kick rumble
+  if (!intro && (i === 4 || i === 12)) { sSnare(t, 0.3, 1700); sNoise(t, 0.5, 0.09, 'lowpass', 3000, 0.5); }        // the huge snare (with its tail)
+  if (SB_TOMS[i] >= 0 && !fill) sTom(t, SB_TOMS[i] ? 115 : 78, 0.36);                                                 // WAR DRUMS
+  if (fill) { sTom(t, [170, 140, 115, 90][i - 12], 0.4); sSnare(t, 0.12 + (i - 12) * 0.05, 2000); }                  // a tom fill into the next phrase
+  if (!intro) sHat(t, i % 2 ? 0.03 : 0.05, i % 8 === 6);
+  // THE BASS (growling) + the sub you feel
+  if (!intro && i % 2 === 0 || climax) tone(NOTE(root + SB_BASS[i]), t, sd * 0.9, { type: 'sawtooth', vol: 0.07, cutoff: 300 + (i % 4) * 120 + (climax ? 300 : 0), q: 6, bus: songDist() });
+  if (i % 8 === 0) sSub(root, t, sd * 8, 0.075);
+  // BRASS stabs: da-da-DA
+  if (i === 0 || i === 3 || i === 6) sPad(chord.slice(0, 3).map(n => n + 12), t, sd * (i === 6 ? 3 : 1.4), { type: 'sawtooth', vol: i === 6 ? 0.016 : 0.012, cutoff: climax ? 2600 : 1800, verb: 0.3 });
+  // the CHOIR underneath
+  if (i === 0) sPad(chord.slice(0, 3), t, sd * 16, { type: 'triangle', vol: 0.012, cutoff: 1600, verb: 0.7 });
+  // the HEROIC LEAD (climax only), singing notes of the chord
+  if (climax && SB_LEAD[i] >= 0) { const n = chord[SB_LEAD[i]] + 12; tone(NOTE(n), t, sd * 1.8, { type: 'square', vol: 0.03, cutoff: 3800, echo: 0.25, pan: -0.25 }); tone(NOTE(n + 12), t, sd * 1.5, { type: 'sawtooth', vol: 0.011, cutoff: 5500, pan: 0.25 }); }
+  if (bar % 8 === 7 && i === 0) sRiser(t, sd * 16, 0.09);
+  if ((bar === 0 || bar === 2 || bar === 8) && i === 0) { sCrash(t, 0.12); sKick(t, 0.65, 90, 28, 0.8); }            // an IMPACT on each new section
+}
+
 // 8 — dreamy and HOPEFUL: big bright chords, a soft swaying beat, a bass,
 // TWO shimmering arpeggios crossing each other, and a choir-like lead.
 const STAR_CHORDS = [[50, 54, 57, 61, 64], [47, 50, 54, 57, 61], [43, 47, 50, 54, 61], [45, 49, 52, 54, 57]];
@@ -1972,8 +2055,8 @@ function songLastSecond(step, t, sd) {
 // =====================================================================
 // (the new songs are just numbered for now — Sixten names them later)
 const SONGS = [
-  { key: 'menu', gain: 2.60, name: 'MAIN MENU', game: true, bpm: 68, step: (s, t, sd) => menuStep(s, t, sd), vibe: 'SAD, SLOW AND BROKEN. A MUSIC BOX THAT GLITCHES.' },
-  { key: 'portal', gain: 1.78, name: 'THE PORTAL', game: true, bpm: 52, step: (s, t, sd) => portalStep(s, t, sd), vibe: 'CALM, DARK AND HUGE. THE ONLY QUIET PLACE.' },
+  { key: 'menu', gain: 2.60, name: 'BEGINNING', game: true, bpm: 68, step: (s, t, sd) => menuStep(s, t, sd), vibe: 'SAD, SLOW AND BROKEN. A MUSIC BOX THAT GLITCHES.' },
+  { key: 'portal', gain: 1.78, name: 'BETWEEN', game: true, bpm: 52, step: (s, t, sd) => portalStep(s, t, sd), vibe: 'CALM, DARK AND HUGE. THE ONLY QUIET PLACE.' },
   { key: 'nullification', gain: 1.30, name: '1', bpm: 132, step: songNullification, vibe: 'HARD INDUSTRIAL TECHNO. REALITY BEING ERASED.' },
   { key: 'heart', gain: 1.74, name: '2', bpm: 64, step: songHeart, vibe: 'A SLOW HEARTBEAT UNDER HEAVY, SAD CHORDS.' },
   { key: 'voidlands', gain: 2.09, name: '3', bpm: 56, step: songVoidlands, vibe: 'EMPTY AND FLOATING. NO DRUMS. YOU ARE ALONE.' },
@@ -1984,7 +2067,8 @@ const SONGS = [
   { key: 'stardim', gain: 1.95, name: '8', bpm: 68, step: songStarDimension, vibe: 'DREAMY AND HOPEFUL. THE ONLY HAPPY SONG.' },
   { key: 'deepsignal', gain: 2.19, name: '9', bpm: 82, step: songDeepSignal, vibe: 'SLOW UNDERWATER DUB. A RADIO SENDS MORSE CODE.' },
   { key: 'lastsecond', gain: 1.62, name: '10', bpm: 120, step: songLastSecond, vibe: 'TICKING SUSPENSE THAT KEEPS RISING.' },
-  { key: 'lightning', gain: 1.3, name: '11', bpm: 152, step: songLightning, vibe: 'LIGHTNING ROUND: FAST, LOUD AND ELECTRIC.' },
+  { key: 'lightning', gain: 1.3, name: 'HYPERTHUNDER', bpm: 152, step: songLightning, vibe: 'LIGHTNING ROUND: FAST, LOUD AND ELECTRIC.' },
+  { key: 'stormbird', gain: 1.06, name: '12', game: true, bpm: 140, step: songStormbird, vibe: 'FENIX: WAR DRUMS, BASS AND A HEROIC LEAD. SUPER EPIC.' },
 ];
 const SONG_BY_KEY = Object.fromEntries(SONGS.map(s => [s.key, s]));
 const JUKE = { playing: null };          // which song the soundtrack player is playing (null = none)
@@ -2433,9 +2517,11 @@ function startArea(area, n) {
   S.banner = 0;                                   // (the sector's name slides in at the top AFTER the arrival)
   S.hudSeen = {}; S.heldK = 0; S.heldShow = null;  // (the HUD slides in fresh)
   // LIGHTNING ROUND-style rules: a countdown, and arrows to every podium from the start
+  S.timeUp = false;
   S.lrTime = sec && sec.timer ? (diff().name === 'BRUTAL' && sec.timerBrutal ? sec.timerBrutal : sec.timer) : null;
   if (sec && sec.allPodiumsSeen) for (const p of world.podiums) p.seen = true;
-  S.spawn = S.sector ? { t: 0 } : null;           // THE ARRIVAL: The Anchor forms, and you come out of it
+  if (sec && sec.boss) initBoss();                 // a BOSS arena (fenix.js)
+  S.spawn = S.sector ? { t: 0 } : null; S.bossCut = null;           // THE ARRIVAL: The Anchor forms, and you come out of it
   if (S.spawn) { player.x = 0; player.y = 0; cam.x = 0; cam.y = 20; }
   S.mode = 'play'; S.intro = 3.2; S.boost = 1; S.msgT = 0; S.rift = 0; S.riftB = null;
   S.hp = CFG.maxHp; S.hurtT = 0; S.riftTouch = -1; S.pureTouch = 0; S.launchT = 0; S.hitFlash = 0; S.deathCause = null;   // full health each area
@@ -2453,9 +2539,24 @@ function afterClear() {
 }
 function newRun() { startArea(1, CFG.firstShards); }
 function nextArea() { startArea(S.area + 1, S.shardCount + ri(CFG.moreShardsMin, CFG.moreShardsMax)); }
+// the main menu's background: a little piece of a sector — The Anchor in the
+// middle, a podium with its blue shard held down by lightning on one side, a
+// corrupted (red) podium on the other, blobs of Purification at the edges
+function makeTitleWorld() {
+  const w = genWorld(7, 777, 0, { podiums: true, rifts: false, tears: false, locators: false, portal: false, farRifts: false, farLightning: false, blobs: { count: 4, r: [26, 36], parts: [1, 1] } });
+  const place = (p, x, y) => { const dx = x - p.x, dy = y - p.y; p.x += dx; p.y += dy; p.shard.x += dx; p.shard.y += dy; };
+  const [p1, p2] = w.podiums;
+  place(p1, -215, 40); place(p2, 215, 40);
+  p2.state = 'corrupt'; p2.filled = true; p2.fillT = -9; p2.shard.state = 'placed'; p2.shard.pure = false; p2.shard.y = p2.y - 6;
+  w.shards = [p1.shard, p2.shard]; w.total = 2; w.delivered = 1;
+  w.podiums = [p1, p2];
+  const spots = [[-285, -115], [-270, 150], [290, -105], [280, 155]];   // (small, in the corners — not behind the text)
+  w.nulls = w.nulls.slice(0, spots.length); w.nulls.forEach((n, i) => { n.x = spots[i][0]; n.y = spots[i][1]; });
+  return w;
+}
 function toTitle(quit = false) {
   S.mode = 'title'; S.stab = 0; S.tutorial = false; S.sector = null; S.cutscene = null; S.spawn = null;
-  world = genWorld(11, 777); player = null; flyers = []; particles = []; pops = [];
+  world = makeTitleWorld(); player = null; flyers = []; particles = []; pops = [];
   cam.x = 0; cam.y = -30;
   if (quit) checkForUpdate();                     // quit to the menu = a good moment to grab a new version
 }
@@ -2493,7 +2594,7 @@ function sealComplete() {
 // death menu can say what killed you. small = a Rift's little bite (it doesn't
 // use the "can't be hit again" cooldown, it has its own 2-second rhythm).
 // noCd = this hit ignores the short "can't be hit again" cooldown (every laser, spike... counts)
-const ENEMY_CAUSES = ['beamer', 'mine', 'basher', 'spike', 'maw', 'node'];
+const ENEMY_CAUSES = ['beamer', 'mine', 'basher', 'spike', 'maw', 'node', 'fenix', 'feather'];
 function hurt(dmg, cause, small = false, noCd = false) {
   if (S.sector && ENEMY_CAUSES.includes(cause)) dmg *= diff().dmg;   // (enemies hit softer / harder on easier / harder difficulties)
   if (S.mode !== 'play' || (world && world.won)) return;   // (already won: nothing can hurt you any more)
@@ -2529,7 +2630,7 @@ function crackDie(cause) {
 // =====================================================================
 const SPAWN = { form: 0.35, burst: 1.8, emerge: 2.15, out: 2.85, end: 3.2 };
 // how much of The Anchor exists yet (for its light): 0 ... 1
-function spawnAnchorK() { if (!S.spawn) return 1; const t = S.spawn.t; return t >= SPAWN.burst ? 1 : Math.pow(clamp((t - SPAWN.form) / (SPAWN.burst - SPAWN.form), 0, 1), 2) * 0.6; }
+function spawnAnchorK() { if (world && world.anchorGone) return 0; if (!S.spawn) return 1; const t = S.spawn.t; return t >= SPAWN.burst ? 1 : Math.pow(clamp((t - SPAWN.form) / (SPAWN.burst - SPAWN.form), 0, 1), 2) * 0.6; }
 function updateSpawn(dt) {
   const P = S.spawn, t = (P.t += dt);
   if (t >= SPAWN.form && !P.f) { P.f = 1; SFX.corrupt(); }
@@ -2547,7 +2648,7 @@ function updateSpawn(dt) {
   for (const tr of player.trail) tr.life -= dt;
   player.trail = player.trail.filter(tr => tr.life > 0);
   cam.x += (0 - cam.x) * (1 - Math.exp(-dt * 4)); cam.y += (20 + e * 30 - cam.y) * (1 - Math.exp(-dt * 4));
-  if (t >= SPAWN.end) { S.spawn = null; S.banner = S.tutorial ? 0 : 0.001; }
+  if (t >= SPAWN.end) { S.spawn = null; S.banner = S.tutorial || world.boss ? 0 : 0.001; if (world.boss) startBossIntro(); }   // (no banner in the boss arena: its intro shows the name)
 }
 // The Anchor while it's FORMING (before the burst): lightning striking into one point
 function drawAnchorForming(camX, camY) {
@@ -2577,6 +2678,8 @@ const DEATH_TEXT = {
   border:   ['THROWN BACK', 'KILLED BY THE BORDER'],
   danger:   ['DISSOLVED', 'KILLED BY A DANGERBLOB'],
   node:     ['ELECTROCUTED', 'KILLED BY A NODE'],
+  fenix:    ['TORN APART', 'KILLED BY FENIX'],
+  feather:  ['FEATHERED', 'KILLED BY A FEATHER'],
   mine:   ['PURIFIED', 'KILLED BY A PURIFICATION MINE'],
   basher: ['CRUSHED', 'KILLED BY A BASHER'],
   spike:  ['SHREDDED', 'KILLED BY BASHER SPIKES'],
@@ -2724,6 +2827,14 @@ function drawLocators(camX, camY) {
 }
 
 // DASH (SPACE): shoot forward — the way you're walking (or last walked)
+// TIME'S UP (LIGHTNING ROUND): the Purification RUSHES in from everywhere —
+// it reaches The Anchor in about 3 seconds (and nothing holds it back now)
+function timeUpRush() {
+  const F = world.front; if (!F) { crackDie('time'); return; }
+  F.rushV = (F.minR - CFG.nullFail + 20) / 3;
+  S.shake = 10; SFX.boom(2, 0); SFX.screech(0.8);
+  pops.push({ x: player.x, y: player.y - 40, life: 3, txt: "TIME IS UP" });
+}
 // the dash's cooldown: a sector can make it quicker (LIGHTNING ROUND) — but not on BRUTAL
 function dashCooldown() { const sec = S.sector; return sec && sec.dashCd && diff().name !== 'BRUTAL' ? sec.dashCd : CFG.dashCooldown; }
 function tryDash() {
@@ -2849,8 +2960,9 @@ function update(dt) {
   if (S.mode === 'play') updatePlay(dt, k);
   else if (inMenu()) {
     if (S.mode === 'mission') updateMission(dt);
+    if (S.mode === 'realities') updateUnlock(dt);
     updateMenu(dt);
-    S.noIvar = Math.max(0, (S.noIvar || 0) - dt); cam.x = Math.sin(S.t * 0.07) * 60; cam.y = -30 + Math.cos(S.t * 0.05) * 30; }
+    S.noIvar = Math.max(0, (S.noIvar || 0) - dt); cam.x = Math.sin(S.t * 0.07) * 40; cam.y = -10 + Math.cos(S.t * 0.05) * 20; }
   else if (S.mode === 'clear' && world.opt.podiums) { const before = S.clearT; S.clearT += dt; updateFinale(dt, before); }   // (purify.js)
   else if (S.mode === 'clear') {
     const before = S.clearT; S.clearT += dt;
@@ -2980,6 +3092,7 @@ function updatePlay(dt, k) {
   player.px = player.x; player.py = player.y;      // (where you were at the start of this frame — beams check your whole path)
   if (S.cutscene) { updateCutscene(dt); return; }   // (a tutorial cutscene: the world holds still)
   if (S.spawn) { updateSpawn(dt); return; }         // (the arrival at the start of a sector)
+  if (S.bossCut) { updateBossCut(dt); return; }     // (a boss cutscene — fenix.js)
   // --- movement (smoothly speed up / slow down) ---
   let ix = 0, iy = 0;
   if (keys.a || keys.arrowleft) ix--;
@@ -3090,9 +3203,11 @@ function updatePlay(dt, k) {
   player.trail = player.trail.filter(t => t.life > 0);
 
   // --- camera follows, looking a little ahead of where you walk ---
-  const ca = 1 - Math.exp(-dt * 5);
-  cam.x += (player.x + player.vx * 0.35 - cam.x) * ca;
-  cam.y += (player.y + player.vy * 0.35 - cam.y) * ca;
+  // (in the boss fight it leans toward FENIX, so you can see both of you)
+  const ca = 1 - Math.exp(-dt * 5), Bo = world.boss && !world.boss.dead && world.boss.state !== 'hidden' ? world.boss : null;
+  const lx = Bo ? clamp((Bo.x - player.x) * 0.35, -110, 110) : 0, ly = Bo ? clamp((Bo.y - player.y) * 0.35, -80, 80) : 0;
+  cam.x += (player.x + player.vx * 0.35 + lx - cam.x) * ca;
+  cam.y += (player.y + player.vy * 0.35 + ly - cam.y) * ca;
 
   // --- picking up shards --- (purifying sectors: purify.js instead, plus the Beamers)
   if (world.opt.podiums) {
@@ -3101,8 +3216,9 @@ function updatePlay(dt, k) {
     if (S.mode === 'play') updateBashers(dt);
     if (S.mode === 'play') updateMaws(dt);
     if (S.mode === 'play') updateNodes(dt);
+    if (S.mode === 'play' && world.boss) updateBoss(dt);   // FENIX (fenix.js)
     // the COUNTDOWN (LIGHTNING ROUND): at zero, you've failed
-    if (S.lrTime != null && S.mode === 'play' && !world.won) { S.lrTime -= dt; if (S.lrTime <= 0) { S.lrTime = 0; crackDie('time'); return; } }
+    if (S.lrTime != null && S.mode === 'play' && !world.won && !S.timeUp) { S.lrTime -= dt; if (S.lrTime <= 0) { S.lrTime = 0; S.timeUp = true; timeUpRush(); } }   // TIME'S UP: the Purification rushes in
     if (S.mode !== 'play') return;
   }
   else for (const s of world.shards) {
@@ -5246,7 +5362,7 @@ function swapTo(q) {                                        // bring shard q (fr
 }
 function dropFromBacks(q) { player.backs = player.backs.filter(b => b !== q); }
 function promoteBack() { if (!player.held && player.backs.length) player.held = player.backs.shift(); }
-const nearAnchor = () => Math.hypot(player.x, player.y) <= CFG.deliverRange;
+const nearAnchor = () => !world.anchorGone && Math.hypot(player.x, player.y) <= CFG.deliverRange;
 function podiumNear(ok = p => p.state !== 'corrupt' && p.state !== 'corrupting') {
   let best = null, bd = CFG.podiumRange;
   for (const p of world.podiums) if (ok(p)) { const d = Math.hypot(p.x - player.x, p.y - player.y); if (d < bd) { bd = d; best = p; } }
@@ -5256,6 +5372,7 @@ function podiumNear(ok = p => p.state !== 'corrupt' && p.state !== 'corrupting')
 // E (pressed): corrupt at The Anchor, or put it back on its podium.
 // (Taking a shard OFF a podium is HOLD E — see updatePurify.)
 function interactPurify() {
+  if (world.boss) { corruptBeam(); return; }             // (the boss arena: E fires the corruption beam — fenix.js)
   promoteBack();
   if (player.backs.length && !(player.held && player.held.anim)) {
     const want = (q) => { if (q.half !== undefined) return nearAnchor(); const p = podiumNear(); if (p) return !q.pure && q.podium === p; return nearAnchor() && q.pure; };
@@ -6133,7 +6250,7 @@ function drawPurifyHUD(k, late) {
     text(txt, W / 2, 42, 2, low ? '#ff4040' : '#5ff0ff', low ? 0.2 : 0.03, 'center');
   });
   // --- top-right: the podiums ---
-  if (hud('pods')) hudLayer(hudK('pods'), 170, 0, () => {
+  if (hud('pods') && !world.boss) hudLayer(hudK('pods'), 170, 0, () => {
     const n = world.podiums.length, pw = Math.max(146, n * 10 + 16), px = W - 8 - pw;
     hudPanel(px, 8, pw, 32, world.delivered >= n ? '#ff0000' : '#3c3c42');
     text('PODIUMS CORRUPTED', px + 6, 12, 1, '#8c8c96', 0);
@@ -6228,14 +6345,16 @@ function drawPurifyHUD(k, late) {
       const c = Math.cos(a), sn = Math.sin(a); g.fillStyle = (b.state === 'charge' || b.state === 'windup' || b.state === 'open') && Math.floor(S.t * 12) % 2 ? '#fff' : '#8a6cff';   // (purified enemies: blue-purple)
       for (let i = 0; i < 5; i++) for (const sd of [-1, 1]) g.fillRect(Math.round(x - c * i + sd * sn * i), Math.round(y - sn * i - sd * c * i), 2, 2);   // a ">" pointing at it
     });
+  if (world.boss) drawBossHUD();                     // (Fenix's health bar, your sword — fenix.js)
   // THE BANNER: when you enter, the reality + sector name slide down at the top, stay, and fade
   if (S.banner > 0 && S.banner < 5) {
     const b = S.banner, slide = b < 0.5 ? 1 - smoothstep(b / 0.5) : 0, fade = b > 4 ? 1 - (b - 4) : 1;
-    const y = 52 - slide * 48, gl = b < 0.6 ? 0.6 : 0.06;   // (just under the HUD panels)
+    const y = (S.lrTime != null ? 66 : 52) - slide * 48, gl = b < 0.6 ? 0.6 : 0.06;   // (just under the HUD panels — and under the countdown, if there is one)
     g.globalAlpha = fade;
     const rn = S.reality ? S.reality.name : '', idx = S.reality ? S.reality.sectors.indexOf(S.sector) + 1 : 1;
     text('REALITY: ' + rn + '   -   SECTOR ' + idx + '   -   ' + diff().name, W / 2, y, 1, '#8c8c96', gl * 0.5, 'center');
     text(areaName(), W / 2, y + 11, 3, '#fff', gl, 'center');
+    if (S.sector && S.sector.tip) text(S.sector.tip, W / 2, y + 40, 1, cyanWorld() ? '#5ff0ff' : '#ff0000', gl * 0.5, 'center');   // (a sector's tip, e.g. LIGHTNING ROUND)
     g.fillStyle = cyanWorld() ? '#5ff0ff' : '#ff0000'; const lw = textWidth(areaName(), 3) * Math.min(1, b * 2); g.fillRect(Math.round(W / 2 - lw / 2), y + 35, Math.round(lw), 1);
     g.globalAlpha = 1;
   }
@@ -6288,13 +6407,13 @@ function updateFront(dt) {
     const a = i / FRONT_N * 6.2832;
     let m = 1 + 0.5 * Math.sin(a * 3 + T * 0.05 + F.ph[0]) + 0.3 * Math.sin(a * 7 - T * 0.08 + F.ph[1]) + 0.15 * Math.sin(a * 13 + T * 0.11 + F.ph[2]);
     for (const s of F.surges) { const d = angDiff(a, s.a) / s.w; m += s.amp * Math.exp(-d * d) * Math.sin(Math.PI * s.t / s.life); }
-    r[i] -= speed * Math.max(0.15, m) * dt;
+    r[i] -= speed * Math.max(0.15, m) * dt + (F.rushV || 0) * dt;   // (+ the RUSH when time's up)
   }
   // even each spoke out with its neighbours (blobby, not spiky)
   const c = Float32Array.from(r);
   for (let i = 0; i < FRONT_N; i++) r[i] = c[(i + FRONT_N - 1) % FRONT_N] * 0.25 + c[i] * 0.5 + c[(i + 1) % FRONT_N] * 0.25;
-  // filled podiums hold it back in their direction
-  for (const p of world.podiums) if (p.filled) {
+  // filled podiums hold it back in their direction (not when time's up)
+  for (const p of world.podiums) if (p.filled && !F.rushV) {
     const dp = Math.hypot(p.x, p.y), ap = Math.atan2(p.y, p.x), aw = Math.atan2(CFG.nullProtect, dp);
     for (let i = 0; i < FRONT_N; i++) {
       const da = Math.abs(angDiff(i / FRONT_N * 6.2832, ap));
@@ -6477,7 +6596,7 @@ function podPos(b, i) {
 
 function updateBeamers(dt) {
   if (!world.beamers) return;
-  const safeP = Math.hypot(player.x, player.y) < CFG.beamerSafe - 30;   // you're in The Anchor's light
+  const safeP = !world.anchorGone && Math.hypot(player.x, player.y) < CFG.beamerSafe - 30;   // you're in The Anchor's light
   for (const b of world.beamers) {
     if (b.dead) { b.deadT += dt; continue; }
     darkTick(b, dt);
@@ -6528,14 +6647,14 @@ function updateBeamers(dt) {
     let vx = Math.cos(b.state === 'wander' ? b.wa : b.ang) * speed, vy = Math.sin(b.state === 'wander' ? b.wa : b.ang) * speed;
     // keep out of The Anchor's light, apart from each other, and inside the map
     const ad = Math.hypot(b.x, b.y);
-    if (ad < CFG.beamerSafe) { vx += b.x / ad * 90; vy += b.y / ad * 90; if (b.state === 'wander') b.wa = Math.atan2(b.y, b.x); }
+    if (ad < CFG.beamerSafe && !world.anchorGone) { vx += b.x / ad * 90; vy += b.y / ad * 90; if (b.state === 'wander') b.wa = Math.atan2(b.y, b.x); }
     for (const o of world.beamers) if (o !== b && !o.dead) { const ox = b.x - o.x, oy = b.y - o.y, od = Math.hypot(ox, oy); if (od < 40 && od > 0) { vx += ox / od * 30; vy += oy / od * 30; } }
     const lim = edgeRadiusAt(world.edge, Math.atan2(b.y, b.x)) - 60;
     if (ad > lim) { vx -= b.x / ad * 60; vy -= b.y / ad * 60; b.wa = Math.atan2(-b.y, -b.x); }
     b.vx += (vx - b.vx) * (1 - Math.exp(-dt * 3)); b.vy += (vy - b.vy) * (1 - Math.exp(-dt * 3));
     b.x += b.vx * dt; b.y += b.vy * dt;
     b.alert = Math.max(0, (b.alert || 0) - dt);
-    if (Math.hypot(b.x, b.y) < CFG.anchorTouch && tryKill(b)) { b.dead = true; b.deadT = 0; explode(b.x, b.y, 'mix', 1.2); suckRemains(b.x, b.y, b.dark ? ['#a020ff', '#1a0628', '#f0c0ff'] : ['#8a6cff', '#100c30', '#6e96ff', '#fff']); world.anchorPulse = 1; }   // it touched The Anchor: BOOM — and The Anchor swallows what's left
+    if (!world.anchorGone && Math.hypot(b.x, b.y) < CFG.anchorTouch && tryKill(b)) { b.dead = true; b.deadT = 0; explode(b.x, b.y, 'mix', 1.2); suckRemains(b.x, b.y, b.dark ? ['#a020ff', '#1a0628', '#f0c0ff'] : ['#8a6cff', '#100c30', '#6e96ff', '#fff']); world.anchorPulse = 1; }   // it touched The Anchor: BOOM — and The Anchor swallows what's left
   }
   world.beamers = world.beamers.filter(b => !b.dead || b.deadT < 1.2);
 }
@@ -6932,7 +7051,7 @@ function drawMines(camX, camY) {
 // =====================================================================
 const BASH = { windup: 0.85, bash: 0.68, speed: 300, recover: 1.3 };
 function updateBashers(dt) {
-  const safeP = Math.hypot(player.x, player.y) < CFG.beamerSafe - 30;
+  const safeP = !world.anchorGone && Math.hypot(player.x, player.y) < CFG.beamerSafe - 30;
   for (const b of world.bashers) {
     if (b.dead) continue;                                 // (blown up this frame — by a shot mine)
     darkTick(b, dt);
@@ -6963,7 +7082,7 @@ function updateBashers(dt) {
     }
     // out of The Anchor's light, and inside the map
     const ad = Math.hypot(b.x, b.y);
-    if (ad < CFG.beamerSafe && b.state !== 'bash') { vx += b.x / ad * 90; vy += b.y / ad * 90; b.wa = Math.atan2(b.y, b.x); }
+    if (ad < CFG.beamerSafe && b.state !== 'bash' && !world.anchorGone) { vx += b.x / ad * 90; vy += b.y / ad * 90; b.wa = Math.atan2(b.y, b.x); }
     const lim = edgeRadiusAt(world.edge, Math.atan2(b.y, b.x)) - 60;
     if (ad > lim) { vx -= b.x / ad * 80; vy -= b.y / ad * 80; b.wa = Math.atan2(-b.y, -b.x); }
     const k = b.state === 'bash' ? 1 : 1 - Math.exp(-dt * 4);
@@ -6974,7 +7093,7 @@ function updateBashers(dt) {
     // Basher on a slow frame could otherwise jump right past you)
     if (b.state === 'bash' && !b.hit && segDistB(player.x, player.y, ox, oy, b.x, b.y) < CFG.basherHit) { b.hit = true; basherHits(b); if (b.dead) continue; }
     if (b.dark) dropSlime(b, Math.hypot(b.x - ox, b.y - oy));   // a dark Basher leaves SLIME
-    if (Math.hypot(b.x, b.y) < CFG.anchorTouch && tryKill(b)) { b.dead = true; explode(b.x, b.y, 'mix', 1.2); suckRemains(b.x, b.y, ['#8a6cff', '#100c30', '#b48cff', '#fff']); world.anchorPulse = 1; continue; }   // it touched The Anchor: BOOM — and The Anchor swallows what's left
+    if (!world.anchorGone && Math.hypot(b.x, b.y) < CFG.anchorTouch && tryKill(b)) { b.dead = true; explode(b.x, b.y, 'mix', 1.2); suckRemains(b.x, b.y, ['#8a6cff', '#100c30', '#b48cff', '#fff']); world.anchorPulse = 1; continue; }   // it touched The Anchor: BOOM — and The Anchor swallows what's left
     // the TAIL: each segment follows the one in front of it (that's what makes it wave)
     let px = b.x, py = b.y;
     for (const seg of b.tail) { seg.x += (px - seg.x) * Math.min(1, dt * 14); seg.y += (py - seg.y) * Math.min(1, dt * 14); const sd = Math.hypot(seg.x - px, seg.y - py); if (sd > 5) { seg.x = px + (seg.x - px) / sd * 5; seg.y = py + (seg.y - py) / sd * 5; } px = seg.x; py = seg.y; }
@@ -7119,7 +7238,7 @@ function updateMaws(dt) {
     }
     const ad = Math.hypot(m.x, m.y), lim = edgeRadiusAt(world.edge, Math.atan2(m.y, m.x)) - 80;
     if (ad > lim) { vx -= m.x / ad * 40; vy -= m.y / ad * 40; m.wa = Math.atan2(-m.y, -m.x); }
-    if (ad < 70) { vx += m.x / ad * 40; vy += m.y / ad * 40; }       // (it won't sit right ON The Anchor)
+    if (ad < 70 && !world.anchorGone) { vx += m.x / ad * 40; vy += m.y / ad * 40; }       // (it won't sit right ON The Anchor)
     m.x += vx * dt; m.y += vy * dt;
   }
   world.maws = world.maws.filter(m => !m.dead);
@@ -7156,9 +7275,19 @@ function mawStrike(m) {
 // while the lightning lasts: are you touching it (the main bolt or a branch)?
 // Then it hurts CFG.mawDps per second (in little bites, 4 a second). Your
 // shield blocks it — but every second of blocking uses up one of its blocks.
+// how far the lightning has GROWN out of its mouth so far (0 ... 1)
+const mawGrowK = m => m.state === 'zap' ? Math.min(1, m.t / CFG.mawGrow) : 1;
+// a bolt line cut down to how far it has grown (as a list of points)
+function grownLine(line, k) {
+  if (k >= 1) return line;
+  const n = (line.length - 1) * k, j = Math.floor(n), f = n - j, out = line.slice(0, j + 1);
+  if (j + 1 < line.length) out.push([lerp(line[j][0], line[j + 1][0], f), lerp(line[j][1], line[j + 1][1], f)]);
+  return out;
+}
 function mawTouch(m, dt) {
   const B = m.bolt; if (!B || S.mode !== 'play') return;
-  const on = [B.main, ...B.branches].some(line => { for (let j = 1; j < line.length; j++) if (segDistB(player.x, player.y, line[j - 1][0], line[j - 1][1], line[j][0], line[j][1]) < (line === B.main ? CFG.mawWidth : CFG.mawWidth * 0.6)) return true; return false; });   // (WIDE lightning)
+  const gk = mawGrowK(m), mainL = grownLine(B.main, gk), brs = B.branches.filter(br => br.k / (B.main.length - 1) < gk).map(br => grownLine(br, clamp((gk - br.k / (B.main.length - 1)) * 4, 0, 1)));
+  const on = [mainL, ...brs].some(line => { for (let j = 1; j < line.length; j++) if (segDistB(player.x, player.y, line[j - 1][0], line[j - 1][1], line[j][0], line[j][1]) < (line === mainL ? CFG.mawWidth : CFG.mawWidth * 0.6)) return true; return false; });   // (WIDE lightning)
   if (!on) return;
   if (rnd() < dt * 30) particles.push({ x: player.x + rr(-5, 5), y: player.y + rr(-5, 5), vx: rr(-60, 60), vy: rr(-60, 60), life: 0.3, max: 0.3, col: rnd() < 0.5 ? '#fff' : '#8a6cff', s: 1, streak: true });
   if (S.shield) {
@@ -7221,8 +7350,9 @@ function drawMawBolts(camX, camY) {
     if (!m.bolt) continue;
     const f = m.state === 'zap' ? (m.t > m.zapT - 0.3 ? (m.zapT - m.t) / 0.3 : 0.75 + 0.25 * Math.sin(m.t * 40)) : m.state === 'dying' ? Math.max(0, 1 - m.t * 2.5) : 0; if (f <= 0) continue;
     const red = m.state === 'dying', pal = red ? RED_BOLTS : TETHER_BOLTS;
-    const bolts = [[m.bolt.main.map(([x, y]) => [x - camX + rr(-1.5, 1.5), y - camY + rr(-1.5, 1.5)]), 1700 + m.id, true],
-      ...m.bolt.branches.map((br, i) => [br.map(([x, y]) => [x - camX, y - camY]), 1710 + m.id * 10 + i, true])];
+    const gk = mawGrowK(m), nM = m.bolt.main.length - 1;   // (it GROWS out of the mouth: the main bolt first, the branches as it passes them)
+    const bolts = [[grownLine(m.bolt.main, gk).map(([x, y]) => [x - camX + rr(-1.5, 1.5), y - camY + rr(-1.5, 1.5)]), 1700 + m.id, true],
+      ...m.bolt.branches.filter(br => br.k / nM < gk).map((br, i) => [grownLine(br, clamp((gk - br.k / nM) * 4, 0, 1)).map(([x, y]) => [x - camX, y - camY]), 1710 + m.id * 10 + i, true])];
     // a WIDE body of lightning first: thick soft strokes along the bolt (the branches a bit thinner), then the crackling bolt on top
     g.save(); g.globalCompositeOperation = 'lighter'; g.lineCap = 'round'; g.lineJoin = 'round';
     bolts.forEach(([pts], bi) => {
@@ -7233,7 +7363,7 @@ function drawMawBolts(camX, camY) {
     });
     g.restore();
     drawBolts(bolts, 0, 0, pal, f);
-    const [ex, ey] = m.bolt.main[m.bolt.main.length - 1]; glowAt(ex - camX, ey - camY, 30, 30, f, red ? GLOW : GLOW_BLUE);
+    const ml = bolts[0][0], [ex, ey] = ml[ml.length - 1]; glowAt(ex, ey, 30, 30, f, red ? GLOW : GLOW_BLUE);   // (the growing tip)
   }
 }
 
@@ -7370,6 +7500,7 @@ function dropSlime(b, moved) {
   b.slimeD = (b.slimeD || 0) + moved;
   if (b.slimeD < 12) return;
   b.slimeD = 0;
+  if (!world.slime) world.slime = [];                       // (a sector without Dangerblobs — e.g. Fenix's arena — can still get dark Bashers)
   world.slime.push({ x: b.x + rr(-3, 3), y: b.y + rr(-3, 3), r: rr(9, 13), t: CFG.slimeLife, ph: rnd() * 6.3 });
 }
 function updateSlime(dt) {
@@ -7416,7 +7547,7 @@ function dangerPattern() {
   return (DANGER_PAT = g.createPattern(c, 'repeat'));
 }
 function drawDanger(camX, camY) {
-  if (!world.danger) return;
+  if (!world.danger && !world.slime) return;
   // the SLIME trails first (under the pools)
   for (const s of world.slime) {
     const x = s.x - camX, y = s.y - camY; if (x < -20 || x > W + 20 || y < -20 || y > H + 20) continue;
@@ -7426,7 +7557,7 @@ function drawDanger(camX, camY) {
     g.globalAlpha = 1;
   }
   const pat = dangerPattern(); pat.setTransform(new DOMMatrix().translate(Math.round(-camX - S.t * 4), Math.round(-camY + S.t * 2)));
-  for (const d of world.danger) {
+  for (const d of world.danger || []) {
     const x = d.x - camX, y = d.y - camY; if (x < -d.r * 1.6 || x > W + d.r * 1.6 || y < -d.r * 1.6 || y > H + d.r * 1.6) continue;
     const N = d.shape.length, pts = [];
     for (let i = 0; i < N; i++) { const a = i / N * 6.2832, r = dangerR(d, i) * (1 + 0.04 * Math.sin(S.t * 1.6 + i * 0.6 + d.ph)); pts.push([x + Math.cos(a) * r, y + Math.sin(a) * r]); }
@@ -7518,6 +7649,807 @@ function drawNodeBolts(camX, camY) {
   for (const n of world.nodes) if (n.zap) bolts.push([boltPts(n.x - camX, n.y - 14 - camY + Math.sin(n.t * 2 + n.id) * 1.5, player.x - camX, player.y - camY, n.id * 11, 8, 6), 2400 + n.id, true]);
   if (bolts.length) drawBolts(bolts, 0, 0, CYAN_BOLTS, 0.95);
   for (const n of world.nodes) if (n.zap) glowAt(player.x - camX, player.y - camY, 16, 16, 0.7, GLOW_CYAN);
+}
+</script>
+<script>
+// V0ID3D — fenix.js: THE FIRST BOSS — FENIX, a bird made of lightning (sector 5)
+"use strict";
+
+// =====================================================================
+//  FENIX. The arena has no podiums: when you arrive, BLUE CHAINS drag The
+//  Anchor away — but just before it disappears it shoots you a SWORD.
+//    CLICK = slash (25 damage, close)     E = corruption beam (10, far)
+//  (you aim with the mouse)
+//
+//  Fenix (250 HP) is covered in dark purple GOOP (100 HP). Break the goop,
+//  then hit its HEAD. 10 seconds after the goop breaks, it grows back.
+//  Its attacks:
+//    wings    lightning shoots from both wing tips at you
+//    bite     it rears back... and lunges at you
+//    feathers lightning feathers fly out and CHASE you (it also sheds one
+//             now and then when it gets hit)
+//    summon   4 enemies (Beamer 40%, Dual 25%, Triple 15%, Basher 12%,
+//             Thundermaw 8%)
+//    orbs     dark purple orbs fly to its summons and REINFORCE them (they
+//             turn dark: you have to kill them twice)
+//  Summoned enemies have HP: hits to kill them = ENEMY_HP / your damage.
+// =====================================================================
+const FS = 1.8;                                            // how BIG Fenix is (1 = the old size)
+const FENIX = { hp: 600, goop: 160, goopRegen: 7, slash: 25, beam: 10, slashCd: 0.5, beamCd: 0.8, slashR: 44, beamLen: 300 };
+const ENEMY_HP = { beamer: [0, 50, 75, 100], basher: 60, maw: 120 };   // Beamer 2 slashes, Dual 3, Triple 4, Basher 3, Thundermaw 5
+const SUMMON_TABLE = [[40, 'beamer', 1], [25, 'beamer', 2], [15, 'beamer', 3], [12, 'basher'], [8, 'maw']];
+const FEATHER = { speed: 85, turn: 1.6, life: 6, dmg: 7 };
+// the battle's PACE: how long its wings charge, the gap between volleys, the bite's wind-up + lunge, the storm's warning
+const PACE = { wings: 2.0, cyc: 1.15, biteWind: 1.45, biteLunge: 0.6, lunge: 340, storm: 1.8 };
+// after EVERY attack it has to RECOVER for a moment (wings low, panting) — that's
+// YOUR chance: touching it any other time hurts and knocks you back
+const REST = { calm: 2.1, rage: 1.5 };
+const BITE_LOCK = 0.4;                                     // the bite's aim LOCKS this long before it lunges (dodge sideways!)
+const POSE0 = { spread: 1, sweep: 0, neck: 0, beak: 0.1, rise: 1 };
+const PURPLE_BOLTS = { glow: '#a020ff', core: '#f0c0ff', spr: GLOW_DARK };
+const FDMG = { wings: 18, bite: 28, storm: 18, touch: 10 };            // how hard its attacks hit
+
+// ---------- setting up the arena ----------
+function initBoss() {
+  world.podiums = []; world.shards = []; world.nulls = []; world.front = null;
+  world.beamers = []; world.mines = []; world.bashers = []; world.maws = []; world.nodes = [];
+  world.anchorGone = false; world.chains = null; world.anchorAt = null; S.hidePlayer = false;
+  world.boss = { kind: 'fenix', h: Math.PI / 2, x: 0, y: -230, vx: 0, vy: 0, hp: FENIX.hp, goop: FENIX.goop, goopT: 0, state: 'hidden', t: 0, next: 2.5,
+                 flap: 0, flash: 0, appear: 0, face: 1, tx: 0, ty: -230, dead: false, pose: { ...POSE0 }, recoil: 0 };
+  world.feathers = []; world.orbs = []; world.slime = []; world.hpOrbs = []; world.hpOrbT = 3;
+  S.sword = false; S.slashCd = 0; S.beamCd = 0; S.touchCd = 0; S.slashFx = null; S.beamFx = null; S.bossCut = null;
+}
+// the arrival is over: the BOSS INTRO plays
+function startBossIntro() { S.bossCut = { kind: 'intro', t: 0, cap: '' }; world.chains = { from: [[-420, -520], [420, -520], [-640, -80], [640, -80]], tip: 0, pull: 0 }; }
+
+// ---------- aiming (the mouse, or the way you face) ----------
+function aimAngle() {
+  if (S.mouse && S.mouse.on) return Math.atan2(S.mouse.y + cam.y - H / 2 - player.y, S.mouse.x + cam.x - W / 2 - player.x);
+  return Math.atan2(player.fy, player.fx);
+}
+
+// ---------- hitting things ----------
+// Fenix's hit zones: its body and wings (only the GOOP takes damage there) and its HEAD
+// a point on Fenix's body (seen from ABOVE, x = to its right, y = backwards; its head is at y < 0) -> the world
+function fenixAt(B, lx, ly) {
+  const f = [Math.cos(B.h), Math.sin(B.h)], r = [-Math.sin(B.h), Math.cos(B.h)];   // forward, and its right side
+  return [B.x + (r[0] * lx - f[0] * ly) * FS, B.y + (r[1] * lx - f[1] * ly) * FS];
+}
+function fenixZones(B) {
+  const [hx, hy] = fenixAt(B, 0, -34 - (B.pose ? B.pose.neck : 0)), [lx, ly] = fenixAt(B, -54, 2), [rx, ry] = fenixAt(B, 54, 2);
+  return [{ x: B.x, y: B.y, r: 28 * FS, head: false }, { x: lx, y: ly, r: 26 * FS, head: false }, { x: rx, y: ry, r: 26 * FS, head: false }, { x: hx, y: hy, r: 13 * FS, head: true }];
+}
+function damageBoss(dmg, hx, hy) {
+  const B = world.boss; if (!B || B.state === 'hidden' || B.dead) return false;
+  if (B.goop > 0) {
+    B.goop = Math.max(0, B.goop - dmg); B.flash = 0.15; B.recoil = 0.2;
+    burstParticles(hx, hy, 10, 0.8, ['#a020ff', '#1a0628', '#f0c0ff']);
+    pops.push({ x: hx, y: hy - 10, life: 0.8, txt: '-' + dmg });
+    SFX.gooSplat();
+    if (B.goop <= 0) { B.goopT = FENIX.goopRegen; explode(B.x, B.y, 'dark', 1.4); SFX.undark(0); }
+  } else return false;
+  if (rnd() < 0.5) dropFeather(B.x + rr(-50, 50), B.y + rr(-20, 20));            // (hurt: it sheds a feather that hunts you)
+  return true;
+}
+function damageHead(dmg, hx, hy) {
+  const B = world.boss; if (!B || B.dead || B.goop > 0) return false;
+  B.hp = Math.max(0, B.hp - dmg); B.flash = 0.2; B.recoil = 0.2;
+  burstParticles(hx, hy, 14, 1, ['#f0c0ff', '#fff', '#5ff0ff']);
+  if (!(B.cryT > 0)) { B.cryT = 0.6; SFX.fenixHurt(); }
+  pops.push({ x: hx, y: hy - 10, life: 0.8, txt: '-' + dmg });
+  SFX.bossHit(); S.shake = Math.max(S.shake, 3);
+  if (rnd() < 0.6) dropFeather(B.x + rr(-30, 30), B.y + rr(-10, 10));
+  if (B.hp <= 0) startBossDeath();
+  return true;
+}
+// one hit landing on something at (x, y) with radius r around it — what is there?
+// returns true if it hit something
+function hitAt(x, y, r, dmg) {
+  let hit = false;
+  // Fenix (the head only counts once the goop is gone)
+  const B = world.boss;
+  if (B && B.state !== 'hidden' && !B.dead && aliveSummons().length) {
+    // its ENEMIES protect it: while any of them lives, every hit just bounces off its shield
+    if (fenixZones(B).some(q => Math.hypot(q.x - x, q.y - y) < q.r + r) && !(S.clankT > 0)) { S.clankT = 0.25; B.shieldHit = 0.35; burstParticles(x, y, 8, 0.7, ['#fff', B.phase2 ? '#c040ff' : '#5ff0ff']); SFX.clank(); }
+  } else if (B && B.state !== 'hidden' && !B.dead) {
+    const z = fenixZones(B);
+    const headZ = z[3], onHead = Math.hypot(headZ.x - x, headZ.y - y) < headZ.r + r;
+    if (B.goop <= 0 && onHead) hit = damageHead(dmg, x, y) || hit;
+    else if (z.some(q => Math.hypot(q.x - x, q.y - y) < q.r + r)) {
+      if (B.goop > 0) hit = damageBoss(dmg, x, y) || hit;
+      else if (!(S.clankT > 0)) { S.clankT = 0.25; burstParticles(x, y, 6, 0.6, ['#5ff0ff', '#fff']); SFX.clank(); }   // (no goop: only the HEAD takes damage — a clank, and the swing / beam carries on toward the head)
+    }
+  }
+  // its summons
+  for (const e of [...world.beamers, ...world.bashers, ...world.maws]) {
+    if (e.dead || e.state === 'dying' || e.hp === undefined) continue;
+    const er = e.kind ? BEAMER_KIND[e.kind].r : e.r || 11;
+    if (Math.hypot(e.x - x, e.y - y) < er + r) { damageEnemy(e, dmg); hit = true; }
+  }
+  // feathers: one hit each
+  for (const f of world.feathers) if (!f.dead && Math.hypot(f.x - x, f.y - y) < 7 + r) { f.dead = true; burstParticles(f.x, f.y, 6, 0.6, ['#5ff0ff', '#fff']); hit = true; }
+  return hit;
+}
+function damageEnemy(e, dmg) {
+  if (e.reviveT > 0) return;
+  e.hp -= dmg; e.hurtT = 0.15;
+  burstParticles(e.x, e.y, 6, 0.6, e.dark ? ['#a020ff', '#fff'] : ['#8a6cff', '#fff']);
+  if (e.hp > 0) return;
+  if (e.dark) { undark(e); e.hp = e.maxHp; return; }   // (a reinforced one only turns normal — and has to be killed again)
+  if (world.beamers.includes(e)) { e.dead = true; e.deadT = 0; explode(e.x, e.y, 'pure', 0.8 + e.kind * 0.3); SFX.beamerExplode(clamp((e.x - player.x) / 200, -1, 1), e.kind); }
+  else if (world.bashers.includes(e)) { e.dead = true; explode(e.x, e.y, 'pure', 1); }
+  else if (world.maws.includes(e)) { e.state = 'dying'; e.t = 0; }
+}
+// CLICK: slash with the sword (a wide arc in front of you)
+function swordSlash() {
+  if (!S.sword || S.slashCd > 0 || S.bossCut || S.spawn) return;
+  S.slashCd = FENIX.slashCd;
+  const a = aimAngle(); S.slashFx = { a, t: 0 };
+  SFX.slash();
+  // test a fan of points along the arc
+  let hit = false;
+  for (const k of [0, -1, 1, -2, 2, -3, 3]) {               // (the middle of the swing first)
+    const aa = a + k * 0.32, d = FENIX.slashR * 0.7;
+    if (hitAt(player.x + Math.cos(aa) * d, player.y + Math.sin(aa) * d, 16, FENIX.slash)) { hit = true; break; }   // (one swing hits ONE thing)
+  }
+  if (hit) S.shake = Math.max(S.shake, 2);
+}
+// E: the corruption BEAM (hits the first thing along it)
+function corruptBeam() {
+  if (!S.sword || S.beamCd > 0 || S.bossCut || S.spawn) return;
+  S.beamCd = FENIX.beamCd;
+  const a = aimAngle(), dx = Math.cos(a), dy = Math.sin(a);
+  let end = FENIX.beamLen;
+  for (let d = 10; d < FENIX.beamLen; d += 6) if (hitAt(player.x + dx * d, player.y + dy * d, 4, FENIX.beam)) { end = d; break; }
+  S.beamFx = { a, len: end, t: 0 };
+  SFX.beamShot();
+}
+
+// ---------- the feathers that chase you ----------
+function dropFeather(x, y, a = rnd() * 6.283) { world.feathers.push({ x, y, a, v: 60, t: 0 }); }
+function updateFeathers(dt) {
+  for (const f of world.feathers) {
+    f.t += dt;
+    const want = Math.atan2(player.y - f.y, player.x - f.x);
+    f.a += clamp(angDiff(f.a, want), -FEATHER.turn * dt, FEATHER.turn * dt);
+    f.v = Math.min(FEATHER.speed * diff().speed, f.v + dt * 120);
+    f.x += Math.cos(f.a) * f.v * dt; f.y += Math.sin(f.a) * f.v * dt;
+    if (rnd() < dt * 20) particles.push({ x: f.x, y: f.y, vx: 0, vy: 0, life: 0.3, max: 0.3, col: '#5ff0ff', s: 1 });
+    if (Math.hypot(player.x - f.x, player.y - f.y) < 8) { f.dead = true; hurt(FEATHER.dmg, 'feather', false, true); burstParticles(f.x, f.y, 8, 0.8, ['#5ff0ff', '#fff']); }
+    if (f.t > FEATHER.life) { f.dead = true; burstParticles(f.x, f.y, 5, 0.5, ['#5ff0ff']); }
+  }
+  world.feathers = world.feathers.filter(f => !f.dead);
+}
+
+// ---------- summoning ----------
+function summonEnemy(x, y) {
+  let r = rnd() * 100, row = SUMMON_TABLE[0];
+  for (const t of SUMMON_TABLE) { if (r < t[0]) { row = t; break; } r -= t[0]; }
+  let e;
+  if (row[1] === 'beamer') { e = { x, y, vx: 0, vy: 0, ang: 0, wa: rnd() * 6.283, kind: row[2], state: 'chase', t: 0, next: 0, id: 500 + world.beamers.length, dead: false, deadT: 0 }; world.beamers.push(e); e.hp = e.maxHp = ENEMY_HP.beamer[row[2]]; }
+  else if (row[1] === 'basher') { e = { x, y, vx: 0, vy: 0, ang: 0, wa: 0, r: 11, state: 'wander', t: 0, next: 0, id: 500 + world.bashers.length, ghosts: [], tail: Array.from({ length: 9 }, () => ({ x, y })), hunt: 6 }; world.bashers.push(e); e.hp = e.maxHp = ENEMY_HP.basher; }
+  else { e = { x, y, ang: 0, wa: 0, r: 24, state: 'track', t: 0, next: 0, fin: 0, id: 500 + world.maws.length, bolt: null }; world.maws.push(e); e.hp = e.maxHp = ENEMY_HP.maw; }
+  explode(x, y, 'pure', 0.9);
+}
+const aliveSummons = () => [...world.beamers.filter(e => !e.dead), ...world.bashers.filter(e => !e.dead), ...world.maws.filter(e => e.state !== 'dying')];
+
+// ---------- the reinforcing ORBS ----------
+function updateOrbs(dt) {
+  for (const o of world.orbs) {
+    o.t += dt;
+    const e = o.target;
+    if (!e || e.dead || e.state === 'dying') { o.dead = true; continue; }
+    const d = Math.hypot(e.x - o.x, e.y - o.y), sp = 130 + o.t * 60;
+    o.x += (e.x - o.x) / d * sp * dt; o.y += (e.y - o.y) / d * sp * dt + Math.sin(o.t * 6 + o.ph) * 20 * dt;
+    if (d < 12) { o.dead = true; if (!e.dark) { e.reviveT = 0; darken(e); } e.hp = e.maxHp; burstParticles(e.x, e.y, 20, 1, ['#a020ff', '#f0c0ff', '#1a0628']); }
+  }
+  world.orbs = world.orbs.filter(o => !o.dead);
+}
+
+// ---------- RED ORBS: they float around the arena. Touch one: +25 HP.
+// A SUMMONED enemy that drifts into one is destroyed (Fenix isn't). ----------
+const HPORB = { heal: 25, max: 3, every: 9, speed: 38, r: 9 };
+function updateHpOrbs(dt) {
+  world.hpOrbT -= dt;
+  if (world.hpOrbT <= 0 && world.hpOrbs.length < HPORB.max) {
+    world.hpOrbT = HPORB.every;
+    for (let tries = 0; tries < 30; tries++) {
+      const a = rnd() * 6.283, d = rr(120, edgeRadiusAt(world.edge, a) - 140), x = Math.cos(a) * d, y = Math.sin(a) * d;
+      if (Math.hypot(x - player.x, y - player.y) < 140) continue;
+      world.hpOrbs.push({ x, y, a: rnd() * 6.283, t: 0, ph: rnd() * 6 }); explode(x, y, 'red', 0.5, false); break;
+    }
+  }
+  for (const o of world.hpOrbs) {
+    o.t += dt;
+    o.a += Math.sin(o.t * 0.7 + o.ph) * 0.9 * dt;          // a lazy, curving drift
+    o.x += Math.cos(o.a) * HPORB.speed * dt; o.y += Math.sin(o.a) * HPORB.speed * dt;
+    const lim = edgeRadiusAt(world.edge, Math.atan2(o.y, o.x)) - 110, r = Math.hypot(o.x, o.y);
+    if (r > lim) { o.a = Math.atan2(-o.y, -o.x) + rr(-0.6, 0.6); o.x *= lim / r; o.y *= lim / r; }
+    if (Math.hypot(player.x - o.x, player.y - o.y) < HPORB.r + 6 && !S.bossCut) {   // YOU: +25 HP
+      o.gone = true; S.hp = Math.min(CFG.maxHp, S.hp + HPORB.heal); explode(o.x, o.y, 'red', 0.8, false); SFX.corrupted();
+      burstParticles(player.x, player.y, 24, 1, ['#ff0000', '#fff']); pops.push({ x: player.x, y: player.y - 24, life: 1.2, txt: '+' + HPORB.heal + ' HP' });
+    }
+    for (const e of aliveSummons()) {                       // an ENEMY that touches it: destroyed (dark or not)
+      const er = e.kind ? BEAMER_KIND[e.kind].r : e.r || 11;
+      if (Math.hypot(e.x - o.x, e.y - o.y) < HPORB.r + er) { e.dark = false; e.reviveT = 0; damageEnemy(e, 9999); explode(o.x, o.y, 'red', 0.7, false); }
+    }
+  }
+  world.hpOrbs = world.hpOrbs.filter(o => !o.gone);
+}
+function drawHpOrbs(camX, camY) {
+  for (const o of world.hpOrbs) {
+    const x = o.x - camX, y = o.y - camY; if (x < -30 || x > W + 30 || y < -30 || y > H + 30) continue;
+    const p = 0.8 + 0.2 * Math.sin(o.t * 5);
+    glowAt(x, y, 22 * p, 22 * p, 0.8);
+    for (let k = 1; k <= 4; k++) { g.globalAlpha = 0.5 - k * 0.1; g.fillStyle = '#ff0000'; g.fillRect(Math.round(x - Math.cos(o.a) * k * 4) - 1, Math.round(y - Math.sin(o.a) * k * 4) - 1, 2, 2); }   // a little trail
+    g.globalAlpha = 1;
+    g.fillStyle = '#8a0000'; g.beginPath(); g.arc(x, y, HPORB.r * 0.8, 0, 6.2832); g.fill();
+    g.fillStyle = '#ff0000'; g.beginPath(); g.arc(x, y, HPORB.r * 0.55 * p, 0, 6.2832); g.fill();
+    g.fillStyle = '#fff'; g.fillRect(Math.round(x) - 1, Math.round(y) - 1, 2, 2);
+    g.fillStyle = '#ff0000'; dotSquare(x, y, HPORB.r + 4, o.t * 2, 12, 1);   // a ring of dots turning round it
+    g.fillStyle = '#fff'; g.fillRect(Math.round(x) - 2, Math.round(y - HPORB.r - 9), 5, 1); g.fillRect(Math.round(x), Math.round(y - HPORB.r - 11), 1, 5);   // a little "+" above it
+  }
+}
+
+// ---------- FENIX's brain ----------
+const WING_TIPS = B => { const f = fenixWing(B).prim[0]; return [fenixAt(B, -f.tx, f.ty), fenixAt(B, f.tx, f.ty)]; };
+const fenixCharging = B => B.state === 'wings' && (B.t < PACE.wings || (B.phase2 && B.t < PACE.wings + 2 * PACE.cyc && (B.t - PACE.wings) % PACE.cyc > 0.4));
+// the POSE it wants for what it's doing (its body eases into it — see fenixAnimate)
+function poseTarget(B) {
+  const p = { spread: 1, sweep: 0, neck: 0, beak: 0.1, rise: 1, flap: 5.5 }, t = B.t;
+  if (B.state === 'wings') Object.assign(p, fenixCharging(B) ? { spread: 1.25, sweep: -0.25, beak: 0.6, flap: 1.6 } : { spread: 1.3, sweep: -0.1, beak: 1, flap: 3 });   // wings up and FORWARD, trembling
+  else if (B.state === 'bite') {
+    if (t < PACE.biteWind) Object.assign(p, { spread: 0.6, sweep: 0.55, neck: -8, beak: t > PACE.biteWind - BITE_LOCK ? 1 : 0.4, flap: 3 });   // wings folded back, head pulled in... beak OPEN
+    else if (t < PACE.biteWind + PACE.biteLunge) Object.assign(p, { spread: 0.45, sweep: 0.75, neck: 10, beak: B.bit ? 0 : 1, flap: 2 });   // LUNGE: head thrown forward
+    else p.beak = 0.2;
+  }
+  else if (B.state === 'feathers') Object.assign(p, t < 0.6 ? { spread: 1.35, sweep: -0.15, beak: 0.6, flap: 14 } : { spread: 1.1, flap: 7 });   // furious wingbeats
+  else if (B.state === 'storm') Object.assign(p, { spread: 1.3, rise: 1.12, beak: t < 0.7 ? 1 : 0.4, flap: 3 });   // it RISES up, screaming at the sky
+  else if (B.state === 'summon') Object.assign(p, { spread: 1.2, rise: 1.06, beak: 0.8, flap: 4 });
+  else if (B.state === 'orbs') Object.assign(p, { spread: 1.1, beak: 0.5 });
+  else if (B.state === 'recover') Object.assign(p, { spread: 0.8, sweep: 0.25, neck: -3, beak: 0.35 + 0.3 * Math.sin(t * 7), rise: 0.94, flap: 2.6 });   // tired: wings low, panting
+  else if (B.state === 'dying') Object.assign(p, { spread: 1.35 + 0.15 * Math.sin(S.t * 31), sweep: -0.2 + 0.1 * Math.sin(S.t * 23), beak: 1, neck: 4, flap: 16 });   // thrashing
+  return p;
+}
+function fenixAnimate(B, dt) {
+  const p = poseTarget(B), k = 1 - Math.exp(-dt * (B.state === 'bite' ? 14 : 7));
+  for (const key in POSE0) B.pose[key] += (p[key] - B.pose[key]) * k;
+  const before = Math.floor((B.flap + 1.2) / 6.2832);
+  B.flap += dt * p.flap;
+  if (Math.floor((B.flap + 1.2) / 6.2832) !== before && B.state !== 'hidden' && !B.dead && p.flap < 10) SFX.wingBeat(B.state === 'hover' ? 0.5 : 0.8, clamp((B.x - (player ? player.x : 0)) / 250, -1, 1));   // WHOOSH on each downstroke
+  B.recoil = Math.max(0, B.recoil - dt); B.cryT = (B.cryT || 0) - dt; B.shieldHit = Math.max(0, (B.shieldHit || 0) - dt);
+}
+function updateBoss(dt) {
+  const B = world.boss; if (!B || B.dead) return;
+  S.slashCd = Math.max(0, S.slashCd - dt); S.beamCd = Math.max(0, S.beamCd - dt); S.clankT = (S.clankT || 0) - dt;
+  if (S.slashFx) { S.slashFx.t += dt; if (S.slashFx.t > 0.18) S.slashFx = null; }
+  if (S.beamFx) { S.beamFx.t += dt; if (S.beamFx.t > 0.16) S.beamFx = null; }
+  updateFeathers(dt); updateOrbs(dt);
+  if (B.state === 'hidden') return;
+  updateHpOrbs(dt);
+  B.t += dt; fenixAnimate(B, dt); B.flash = Math.max(0, B.flash - dt);
+  // the GOOP grows back 10 s after it broke
+  if (B.goop <= 0) { B.goopT -= dt; if (B.goopT <= 0) { B.goop = FENIX.goop; explode(B.x, B.y, 'dark', 1.2, false); SFX.darken(0); } }
+  const dx = player.x - B.x, dy = player.y - B.y, d = Math.hypot(dx, dy);
+  B.face = dx >= 0 ? 1 : -1;
+  // it TURNS to face you (during the bite it faces where it lunges)
+  const wantH = B.state === 'bite' && B.lunge !== undefined && B.t > PACE.biteWind ? B.lunge : Math.atan2(dy, dx);
+  B.h += clamp(angDiff(B.h, wantH), -2.5 * dt, 2.5 * dt);
+  const lim = edgeRadiusAt(world.edge, Math.atan2(B.y, B.x)) - 120;
+  const glide = (tx, ty, sp) => { const ex = tx - B.x, ey = ty - B.y, l = Math.hypot(ex, ey) || 1; const v = Math.min(sp, l * 3); B.vx += (ex / l * v - B.vx) * (1 - Math.exp(-dt * 3)); B.vy += (ey / l * v - B.vy) * (1 - Math.exp(-dt * 3)); };
+  if (!B.phase2 && B.hp <= FENIX.hp / 2) {               // HALF HEALTH: it gets ENRAGED (phase 2)
+    B.phase2 = true; SFX.fenixRoar(); S.shake = 12; explode(B.x, B.y, 'cyan', 2.6); explode(B.x, B.y, 'dark', 2, false);
+    if (B.goop <= 0) B.goopT = Math.min(B.goopT, 2);       // (and its goop comes back quicker this once)
+  }
+  const sp = diff().speed * (B.phase2 ? 1.15 : 1);
+  // TOUCHING it hurts (except while it's recovering) — and it throws you back
+  S.touchCd = Math.max(0, (S.touchCd || 0) - dt);
+  if (B.state !== 'recover' && S.touchCd <= 0 && fenixZones(B).some(z => Math.hypot(player.x - z.x, player.y - z.y) < z.r * 0.85)) {
+    S.touchCd = 1; hurt(FDMG.touch, 'fenix', false, true);
+    const a = Math.atan2(player.y - B.y, player.x - B.x); player.vx += Math.cos(a) * 320; player.vy += Math.sin(a) * 320; S.launchT = 0.22;
+    SFX.wingBeat(1.5, 0); burstParticles(player.x, player.y, 14, 1, [B.phase2 ? '#c040ff' : '#5ff0ff', '#fff']);
+  }
+  if (B.state === 'hover') {
+    // circle around you at a distance, above you
+    if (B.t > B.retarget || !B.retarget) { const a = -Math.PI / 2 + rr(-1.1, 1.1); B.tx = player.x + Math.cos(a) * rr(230, 300); B.ty = player.y + Math.sin(a) * rr(200, 260); B.retarget = B.t + rr(1.2, 2.2); }
+    glide(B.tx, B.ty, 55 * sp);
+    B.next -= dt * sp;
+    if (B.next <= 0) pickAttack(B);
+  } else if (B.state === 'recover') {                    // catching its breath
+    glide(B.x, B.y, 0);
+    if (B.t > B.rest) { B.state = 'hover'; B.t = 0; B.retarget = 0; B.next = rr(1.4, 2.4); }
+  } else if (B.state === 'wings') {                      // charge the wing tips... then lightning from both
+    glide(B.x, B.y, 0);
+    // (phase 2: THREE volleys, re-aiming between them)
+    const W0 = PACE.wings, vol = B.phase2 ? 2 : 1, cyc = PACE.cyc, k = B.t < W0 ? -1 : Math.floor((B.t - W0) / cyc), inV = B.t - W0 - k * cyc;
+    if (k < 0 ? B.t < W0 - 0.45 : inV > 0.4 && inV < cyc - 0.45) B.lock = [player.x, player.y];   // (the aim FREEZES just before it fires: move!)
+    if (k >= 0 && k < vol && B.volley !== k) { B.volley = k; B.fired = true; B.hitDone = false; B.fireT = B.t; SFX.wingBlast(clamp(-dx / 250, -1, 1)); S.shake = Math.max(S.shake, 5); if (k + 1 < vol) SFX.fenixCharge(cyc, 0); }
+    if (B.fired && !B.hitDone && B.t - B.fireT < 0.3) {
+      for (const [wx, wy] of WING_TIPS(B)) {
+        const a = Math.atan2(B.lock[1] - wy, B.lock[0] - wx), ex = wx + Math.cos(a) * 480, ey = wy + Math.sin(a) * 480;
+        if (segDistB(player.x, player.y, wx, wy, ex, ey) < 16) { hurt(FDMG.wings, 'fenix', false, true); B.hitDone = true; break; }
+      }
+    }
+    if (B.t > W0 + vol * cyc + 0.2) toHover(B);
+  } else if (B.state === 'bite') {                       // rears back... LUNGES
+    if (B.t < PACE.biteWind) { glide(B.x - dx / d * 40, B.y - dy / d * 40, 50); if (B.t < PACE.biteWind - BITE_LOCK || B.lunge === undefined) B.lunge = Math.atan2(dy, dx); }
+    else if (B.t < PACE.biteWind + PACE.biteLunge) {
+      if (!B.lunged) { B.lunged = true; SFX.fenixSnap(); }
+      B.vx = Math.cos(B.lunge) * PACE.lunge * sp; B.vy = Math.sin(B.lunge) * PACE.lunge * sp;
+      const [hx, hy] = fenixAt(B, 0, -34 - B.pose.neck);
+      if (!B.bit && Math.hypot(player.x - hx, player.y - hy) < 26 * FS) { B.bit = true; hurt(FDMG.bite, 'fenix', false, true); player.vx += Math.cos(B.lunge) * 300; player.vy += Math.sin(B.lunge) * 300; S.launchT = 0.25; }
+    } else { glide(B.x, B.y, 0); if (B.t > PACE.biteWind + PACE.biteLunge + 0.6) toHover(B); }
+  } else if (B.state === 'feathers') {                   // a fan of lightning feathers that chase you
+    glide(B.x, B.y, 0);
+    if (!B.fired && B.t > 0.6) { B.fired = true; SFX.featherVolley(); SFX.wingBeat(1.6, 0); for (let k = 0, n = B.phase2 ? 7 : 5; k < n; k++) { const [wx, wy] = WING_TIPS(B)[k % 2]; dropFeather(wx, wy, (k % 2 ? -0.3 : Math.PI + 0.3) + rr(-0.5, 0.5)); } }
+    if (B.t > 1.3) toHover(B);
+  } else if (B.state === 'summon') {                     // 2 enemies, out of lightning
+    glide(B.x, B.y, 0);
+    if (!B.fired && B.t > 0.8) {
+      B.fired = true; SFX.corrupted(); SFX.fenixScreech(0.7, 0);
+      for (let k = 0; k < 2; k++) { for (let tries = 0; tries < 20; tries++) { const a = rnd() * 6.283, r = rr(180, 320), x = B.x + Math.cos(a) * r, y = B.y + Math.sin(a) * r; if (Math.hypot(x, y) < edgeRadiusAt(world.edge, Math.atan2(y, x)) - 80 && Math.hypot(x - player.x, y - player.y) > 90) { summonEnemy(x, y); break; } } }
+    }
+    if (B.t > 1.4) toHover(B);
+  } else if (B.state === 'storm') {                     // LIGHTNING STORM: warning circles... then bolts from the sky
+    glide(B.x, B.y, 0);
+    if (!B.fired) {
+      B.fired = true; SFX.stormCall();
+      const n = B.phase2 ? 7 : 5;
+      B.strikes = [];
+      for (let k = 0; k < n; k++) { const a = rnd() * 6.283, r = k === 0 ? 0 : rr(40, 160); B.strikes.push({ x: player.x + Math.cos(a) * r, y: player.y + Math.sin(a) * r, t: -k * 0.2, hit: false }); }
+    }
+    for (const st of B.strikes) {
+      st.t += dt;
+      if (st.t >= PACE.storm && !st.hit) { st.hit = true; explode(st.x, st.y, B.phase2 ? 'dark' : 'cyan', 0.9, false); SFX.wingBlast(clamp((st.x - player.x) / 250, -1, 1)); if (Math.hypot(player.x - st.x, player.y - st.y) < 28) hurt(FDMG.storm, 'fenix', false, true); }
+    }
+    if (B.t > PACE.storm + 1.9) { B.strikes = null; toHover(B); }
+  } else if (B.state === 'orbs') {                       // dark orbs fly to its summons and make them DARK
+    glide(B.x, B.y, 0);
+    if (!B.fired && B.t > 0.6) {
+      B.fired = true; SFX.darken(0);
+      const targets = aliveSummons().filter(e => !e.dark);
+      for (let k = 0; k < Math.min(3, targets.length); k++) world.orbs.push({ x: B.x, y: B.y, target: targets[k], t: 0, ph: rnd() * 6 });
+    }
+    if (B.t > 1.1) toHover(B);
+  }
+  B.x += B.vx * dt; B.y += B.vy * dt;
+  const r = Math.hypot(B.x, B.y); if (r > lim) { B.x *= lim / r; B.y *= lim / r; }
+}
+// an attack is over: it RECOVERS first (your chance), then hovers again
+function toHover(B) { B.state = 'recover'; B.t = 0; B.rest = B.phase2 ? REST.rage : REST.calm; B.retarget = 0; B.volley = -1; B.fired = B.hitDone = B.lunged = B.bit = false; B.lunge = undefined; }
+function pickAttack(B) {
+  const alive = aliveSummons();
+  const opts = [['wings', 28], ['bite', 22], ['feathers', 18], ['storm', B.phase2 ? 26 : 14]];
+  if (alive.length === 0) opts.push(['summon', 12]);        // (only when all its enemies are dead)
+  if (alive.some(e => !e.dark)) opts.push(['orbs', 12]);
+  let r = rnd() * opts.reduce((a, o) => a + o[1], 0);
+  for (const [name, w] of opts) { if (r < w) { B.state = name; break; } r -= w; }
+  B.t = 0; B.fired = B.hitDone = B.lunged = B.bit = false; B.volley = -1;
+  const pan = clamp((B.x - player.x) / 250, -1, 1);
+  if (B.state === 'wings') SFX.fenixCharge(PACE.wings, pan);
+  if (B.state === 'bite') SFX.fenixScreech(0.4, pan);
+  if (B.state === 'orbs') SFX.darken(pan);
+  B.lunge = undefined;
+}
+
+// ---------- the CUTSCENES ----------
+// intro:  chains shoot in and grab The Anchor (0-1.4) — it fires the SWORD (1.4-2.1)
+//         — it's dragged away (2.1-3.6) — lightning... FENIX appears (3.8-6.6)
+// death:  Fenix shudders and cracks with light (0-2) — BOOM (2) — the chains
+//         bring The Anchor back (2.6-4.6) — the ending
+const BOSS_INTRO = { latch: 1.2, sword: 3.3, swordLand: 4.0, controls: 5.1, drag: 8.0, gone: 9.6, strike: 9.9, appear: 11.2, title: 11.6, end: 14.6 };   // (slow enough to read the captions)
+const BOSS_DEATH = { boom: 3.4, anchor: 6.0, take: 8.6, end: 9.6 };   // (it falls apart for 3.4 s before the BIG explosion)
+// a caption TYPES itself out, a letter at a time (CAP_CPS letters a second), with a soft beep
+const CAP_CPS = 14;
+// New captions WAIT IN LINE: each one types out, stays on screen CAP_HOLD
+// seconds, and only then does the next one start (C.show = the one shown now)
+const CAP_HOLD = 1.6;
+function typeCaption(C) {
+  C.q = C.q || [];
+  if (C.cap !== C.lastCap) { C.lastCap = C.cap; C.q.push(C.cap); }
+  const cur = C.show, done = cur !== undefined && C.typed >= cur.length;
+  if (C.q.length && (cur === undefined || cur === '' || (done && C.t - C.doneT >= CAP_HOLD))) { C.show = C.q.shift(); C.capT = C.t; C.typed = 0; C.doneT = null; }
+  if (C.show === undefined) return;
+  const n = Math.min(C.show.length, Math.floor((C.t - C.capT) * CAP_CPS));
+  for (let i = C.typed; i < n; i++) if (C.show[i] !== ' ' && i % 2 === 0 && C.show !== 'FENIX') SFX.typeBeep(C.show[i]);
+  C.typed = n;
+  if (n >= C.show.length && C.doneT == null) C.doneT = C.t;
+}
+// still typing / reading a caption (the cutscene waits for it)
+const capBusy = C => (C.q && C.q.length > 0) || (!!C.show && C.show !== 'FENIX' && (C.doneT == null || C.t - C.doneT < CAP_HOLD));
+function updateBossCut(dt) {
+  const C = S.bossCut, B = world.boss, t = (C.t += dt);
+  if (C.cap !== undefined) typeCaption(C);
+  if (B && !B.dead && (B.state !== 'hidden' || B.appear > 0)) fenixAnimate(B, dt);
+  const ease = (a, b) => smoothstep(clamp((t - a) / (b - a), 0, 1));
+  const camTo = (x, y) => { const k = 1 - Math.exp(-dt * 3); cam.x += (x - cam.x) * k; cam.y += (y - cam.y) * k; };
+  if (C.kind === 'intro') {
+    const T = BOSS_INTRO, ch = world.chains;
+    if (ch) ch.tip = ease(0, T.latch);
+    if (t >= T.latch && !C.latched) { C.latched = true; SFX.chainLatch(); S.shake = 6; C.cap = 'BLUE CHAINS SEIZE THE ANCHOR'; }
+    if (t >= T.sword && !C.swordOut) { C.swordOut = true; SFX.launch(); C.cap = 'IT FIRES YOU A SWORD...'; }
+    if (t >= T.swordLand && !S.sword) { S.sword = true; SFX.corrupted(); burstParticles(player.x, player.y, 30, 1, ['#ff0000', '#fff']); }
+    if (t >= T.controls && !C.told) { C.told = true; C.cap = '[CLICK] SLASH      [E] CORRUPTION BEAM'; }
+    if (ch) ch.pull = ease(T.drag, T.gone);
+    if (t >= T.gone && !world.anchorGone) { world.anchorGone = true; world.chains = null; C.cap = ''; }
+    if (t >= T.strike && t < T.appear && rnd() < dt * 9) { const x = B.x + rr(-60, 60), y = B.y + rr(-30, 30); explode(x, y, 'cyan', 0.7, false); SFX.mawZap(0); }
+    if (t >= T.strike) B.appear = ease(T.strike, T.appear);
+    if (t >= T.appear && !C.screamed) { C.screamed = true; B.state = 'hover'; B.t = 0; B.next = 2; explode(B.x, B.y, 'cyan', 2.2); SFX.fenixRoar(); S.shake = 10; }
+    if (t >= T.title) C.cap = 'FENIX';
+    camTo(t < T.gone ? lerp(player.x, 0, 0.6) : B.x, t < T.gone ? lerp(player.y, -40 - (ch ? ch.pull : 1) * 300, 0.6) : B.y + 40);
+    if (t >= T.end && !capBusy(C)) { S.bossCut = null; B.appear = 1; if (B.state === 'hidden') { B.state = 'hover'; B.next = 2; } }
+  } else {
+    const T = BOSS_DEATH;
+    const [adx, ady] = anchorDrag();
+    camTo(t < T.anchor ? B.x : player.x, t < T.anchor ? B.y : player.y);   // (then back to you)
+    // FALLING APART: it shrieks, explosions burst all over its body (faster and
+    // faster), lightning lashes out of it in every direction, feathers tear off
+    if (t < T.boom) {
+      if (!C.shrieked) { C.shrieked = true; SFX.fenixDeath(); C.cap = 'FENIX IS FALLING APART'; }
+      const k = t / T.boom;
+      S.shake = Math.max(S.shake, 2 + k * 9);
+      C.popT = (C.popT || 0) - dt;
+      if (C.popT <= 0) {
+        C.popT = 0.32 - k * 0.24;
+        const [px, py] = fenixAt(B, rr(-90, 90), rr(-40, 40));
+        explode(px, py, rnd() < 0.5 ? 'cyan' : 'dark', 0.5 + k * 0.6, rnd() < 0.5); burstParticles(px, py, 14, 1.2, ['#5ff0ff', '#2fd0ff', '#fff', '#c040ff']);
+        const a = rnd() * 6.283; C.arcs = (C.arcs || []).concat([{ x0: B.x, y0: B.y, x1: B.x + Math.cos(a) * rr(150, 320), y1: B.y + Math.sin(a) * rr(100, 220), t: 0, seed: ri(0, 999) }]);
+        if (rnd() < 0.5) SFX.mawZap(clamp((px - player.x) / 250, -1, 1));
+      }
+    }
+    if (C.arcs) { for (const a of C.arcs) a.t += dt; C.arcs = C.arcs.filter(a => a.t < 0.25); }
+    // ...the BIG ONE: a white flash, the biggest explosion yet, a shockwave
+    if (t >= T.boom && !C.boomed) {
+      C.boomed = true; B.dead = true; C.flashT = t;
+      explode(B.x, B.y, 'cyan', 4.5); explode(B.x, B.y, 'dark', 3.4); explode(B.x, B.y, 'pure', 2.4, false);
+      SFX.boom(3, 0); SFX.boom(2, -0.6); SFX.boom(2, 0.6); S.shake = 16;
+      burstParticles(B.x, B.y, 260, 4, ['#5ff0ff', '#2fd0ff', '#fff', '#a020ff', '#c040ff']);   // its feathers and lightning scatter everywhere
+      for (const e of aliveSummons()) { e.dark = false; damageEnemy(e, 9999); }
+      world.hpOrbs = [];
+      C.cap = 'FENIX IS DESTROYED';
+    }
+    if (C.boomed && t < T.anchor && rnd() < dt * 40) particles.push({ x: B.x + rr(-200, 200), y: B.y - 160 + rr(-40, 40), vx: rr(-15, 15), vy: rr(30, 70), life: 2, max: 2, col: rnd() < 0.5 ? '#5ff0ff' : '#fff', s: 1, streak: true });   // feathers of light raining down
+    // The Anchor APPEARS right under you (it forms out of red lightning)...
+    if (t >= T.anchor && !world.anchorAt) { world.anchorAt = [player.x, player.y + 4]; world.anchorGone = false; world.anchorForm = 0; SFX.corrupt(); C.cap = 'THE ANCHOR CAME BACK FOR YOU'; }
+    if (world.anchorAt) world.anchorForm = ease(T.anchor, T.anchor + 0.8);
+    // ...and TAKES you: you're pulled into it in a flash
+    if (t >= T.take && !C.taken) { C.taken = true; S.hidePlayer = true; explode(player.x, player.y, 'red', 2); SFX.launch(); SFX.corrupted(); world.anchorPulse = 1; S.shake = 8; C.cap = ''; }
+    if (t >= T.end && !C.done && !capBusy(C)) {
+      C.done = true; markBeaten(S.sector.name);
+      // on to CHOOSING A REALITY — where the next one UNLOCKS (menus.js)
+      const next = REALITIES.indexOf(S.reality) + 1;
+      fadeTo(() => { S.bossCut = null; S.hidePlayer = false; toTitle(); toRealities(); if (REALITIES[next]) S.unlockAnim = { i: next, t: 0 }; }, 1.4);
+    }
+  }
+}
+function startBossDeath() {
+  const B = world.boss; B.state = 'dying'; B.vx = B.vy = 0;
+  S.bossCut = { kind: 'death', t: 0, cap: '' };
+  world.feathers.forEach(f => f.dead = true); world.orbs = []; B.strikes = null;
+  for (const e of aliveSummons()) { explode(e.x, e.y, 'dark', 0.8, false); burstParticles(e.x, e.y, 20, 1, ['#a020ff', '#fff']); }
+  world.beamers = []; world.bashers = []; world.maws = []; world.mines = []; world.nodes = [];
+}
+// where The Anchor is drawn while the chains drag it (it moves UP and away)
+const anchorDrag = () => world.anchorAt || (world.chains ? [0, -world.chains.pull * 620] : [0, 0]);
+
+// ---------- drawing ----------
+function drawChains(camX, camY) {
+  const ch = world.chains; if (!ch) return;
+  const [ax, ay] = anchorDrag();
+  for (const [fx, fy0] of ch.from) {
+    const fy = fy0 - ch.pull * 620, tx = lerp(fx, ax, ch.tip), ty = lerp(fy, ay, ch.tip);
+    const L = Math.hypot(tx - fx, ty - fy), n = Math.floor(L / 9), ux = (tx - fx) / (L || 1), uy = (ty - fy) / (L || 1);
+    glowLine([[fx, fy], [tx, ty]], -camX, -camY, 20, 0.25, '#3a6cff');
+    for (let i = 0; i < n; i++) {
+      const x = fx + ux * i * 9 - camX, y = fy + uy * i * 9 - camY + Math.sin(i * 0.7 + S.t * 8) * 0.6;
+      g.strokeStyle = i % 2 ? '#6e96ff' : '#c8d8ff'; g.lineWidth = 1.5;
+      g.beginPath(); g.ellipse(x, y, i % 2 ? 4.5 : 2, i % 2 ? 2 : 4.5, Math.atan2(uy, ux), 0, 6.2832); g.stroke();   // links, alternating flat and tall
+    }
+  }
+}
+function drawBossWorld(camX, camY, k) {
+  const C = S.bossCut, B = world.boss;
+  drawChains(camX, camY);
+  // the SWORD flying from The Anchor into your hand
+  if (C && C.kind === 'intro' && C.t >= BOSS_INTRO.sword && C.t < BOSS_INTRO.swordLand) {
+    const u = (C.t - BOSS_INTRO.sword) / (BOSS_INTRO.swordLand - BOSS_INTRO.sword), [ax, ay] = anchorDrag();
+    const x = lerp(ax, player.x, u) - camX, y = lerp(ay, player.y, u) - camY - Math.sin(u * Math.PI) * 60;
+    drawSwordAt(x, y, u * 14, 1.6);
+  }
+  // feathers + orbs
+  for (const f of world.feathers) {
+    const x = f.x - camX, y = f.y - camY, c = Math.cos(f.a), s = Math.sin(f.a);
+    glowAt(x, y, 9, 9, 0.6, GLOW_CYAN);
+    g.strokeStyle = '#5ff0ff'; g.lineWidth = 2; g.beginPath(); g.moveTo(x - c * 7, y - s * 7); g.lineTo(x + c * 5, y + s * 5); g.stroke();
+    g.strokeStyle = '#fff'; g.lineWidth = 1; g.beginPath(); g.moveTo(x - c * 5 - s * 3, y - s * 5 + c * 3); g.lineTo(x + c * 4, y + s * 4); g.lineTo(x - c * 5 + s * 3, y - s * 5 - c * 3); g.stroke();   // feather vanes
+  }
+  if (world.hpOrbs) drawHpOrbs(camX, camY);
+  for (const o of world.orbs) { const x = o.x - camX, y = o.y - camY; glowAt(x, y, 12, 12, 0.9, GLOW_DARK); g.fillStyle = '#7a10d0'; g.fillRect(Math.round(x) - 3, Math.round(y) - 3, 6, 6); g.fillStyle = '#f0c0ff'; g.fillRect(Math.round(x) - 1, Math.round(y) - 1, 2, 2); }
+  if (B && !B.dead && (B.state !== 'hidden' || B.appear > 0)) { drawStorm(B, camX, camY); drawTelegraphs(B, camX, camY); drawFenix(B, camX, camY); drawFenixShield(B, camX, camY); }
+  if (C && C.arcs && C.arcs.length) drawBolts(C.arcs.map(a => [boltPts(a.x0 - camX, a.y0 - camY, a.x1 - camX, a.y1 - camY, a.seed, 9, 10), 3300 + a.seed % 40, true]), 0, 0, rnd() < 0.5 ? CYAN_BOLTS : PURPLE_BOLTS, 1);
+}
+function drawSwordAt(x, y, a, sc = 1) {
+  const c = Math.cos(a), s = Math.sin(a), P = (fx, fy) => [x + (c * fx - s * fy) * sc, y + (s * fx + c * fy) * sc];
+  glowAt(x, y, 10 * sc, 10 * sc, 0.6);
+  g.fillStyle = '#ff0000'; g.beginPath(); [P(-3, -1.5), P(9, -1.5), P(12, 0), P(9, 1.5), P(-3, 1.5)].forEach(([px, py], i) => i ? g.lineTo(px, py) : g.moveTo(px, py)); g.closePath(); g.fill();   // the blade
+  g.strokeStyle = '#fff'; g.lineWidth = 1; g.beginPath(); { const [x0, y0] = P(-2, 0), [x1, y1] = P(10, 0); g.moveTo(x0, y0); g.lineTo(x1, y1); } g.stroke();
+  g.fillStyle = '#fff'; { const [gx, gy] = P(-3, 0); g.fillRect(Math.round(gx - 1), Math.round(gy - 3 * sc), 2, Math.round(6 * sc)); }   // the guard
+}
+// FENIX, seen from ABOVE, drawn around its own middle (0, 0) facing UP (its
+// head at y < 0), then turned to its heading and scaled up by FS.
+// Back to front: a ring of runes — the TAIL (five ribbons of light) — the two
+// WINGS (an arm bone, 8 long flight feathers fanning out from the wrist, a row
+// of shorter feathers along the arm) with lightning jumping between the tips —
+// the BODY with chevron plates and a core — the HEAD: a crest of lightning
+// horns, a beak that opens, and ANGRY slanted eyes under a V-shaped brow.
+// Its POSE (B.pose, set in updateBoss) bends all of this for each attack.
+// Calm it's cyan; ENRAGED (phase 2) it's purple. Never red.
+const FCOL = {
+  calm: { edge: '#5ff0ff', edge2: '#2fd0ff', dark: '#041a24', dark2: '#08303e', eye: '#ffffff', beak: '#e0ffff', spr: GLOW_CYAN, bolts: CYAN_BOLTS, deep: '#0a5a70' },
+  rage: { edge: '#e08cff', edge2: '#b040ff', dark: '#12062a', dark2: '#22104a', eye: '#ffffff', beak: '#f4e0ff', spr: GLOW_DARK, bolts: PURPLE_BOLTS, deep: '#3a0860' },
+};
+// the wing's shape right now (in "right wing" coordinates — the left one is mirrored)
+function fenixWing(B) {
+  const P = B.pose || POSE0, ph = B.flap + 0.55 * Math.sin(B.flap);   // (a FAST downstroke, a slower upstroke)
+  const fl = Math.sin(ph), span = 0.78 + 0.22 * Math.abs(Math.cos(ph));   // from above, wings look SHORTER at the top + bottom of a beat
+  const armA = -0.32 + P.sweep + fl * 0.16, armL = 34 * span * (0.6 + 0.4 * P.spread);
+  const s = [10, -8], w = [s[0] + Math.cos(armA) * armL, s[1] + Math.sin(armA) * armL];
+  const prim = [];
+  for (let i = 0; i < 8; i++) {
+    const u = i / 7, a = armA - 0.25 + u * (1.25 + (P.spread - 1) * 0.6), L = (62 - u * 26) * span * (0.7 + 0.3 * P.spread);
+    const bx = w[0] - Math.cos(armA) * u * 4, by = w[1] - Math.sin(armA) * u * 4;
+    prim.push({ bx, by, a, L, wd: 6.5 - u * 2, tx: bx + Math.cos(a) * L, ty: by + Math.sin(a) * L });
+  }
+  return { P, fl, span, armA, s, w, prim };
+}
+// a feather: a long leaf shape from (x, y) pointing at angle a (sd = which side: mirrors x)
+function featherAt(sd, x, y, a, L, wd, fill, edge) {
+  const dx = Math.cos(a), dy = Math.sin(a), nx = -dy, ny = dx, X = v => v * sd;
+  g.fillStyle = fill; g.beginPath();
+  g.moveTo(X(x + nx * wd * 0.3), y + ny * wd * 0.3);
+  g.quadraticCurveTo(X(x + dx * L * 0.55 + nx * wd), y + dy * L * 0.55 + ny * wd, X(x + dx * L), y + dy * L);
+  g.quadraticCurveTo(X(x + dx * L * 0.55 - nx * wd * 0.6), y + dy * L * 0.55 - ny * wd * 0.6, X(x - nx * wd * 0.3), y - ny * wd * 0.3);
+  g.closePath(); g.fill(); g.strokeStyle = edge; g.stroke();
+}
+function drawFenix(B, camX, camY) {
+  const ap = B.appear ?? 1, dying = B.state === 'dying', sh = dying ? (S.bossCut ? S.bossCut.t * 3 : 0) : 0;
+  const ox = Math.round(B.x - camX) + rr(-sh, sh), oy = Math.round(B.y - camY) + rr(-sh, sh), T = S.t;
+  const rage = B.phase2, C = rage ? FCOL.rage : FCOL.calm, charging = fenixCharging(B), angry = !['hover', 'recover', 'hidden'].includes(B.state);
+  const Wg = fenixWing(B), P = Wg.P, rc = B.recoil > 0 ? B.recoil / 0.2 : 0;
+  glowAt(ox, oy, 150 * FS * 0.6 * P.rise, 150 * FS * 0.6 * P.rise, (0.28 + (B.flash > 0 ? 0.25 : 0)) * ap * (B.state === 'recover' ? 0.6 : 1), C.spr);
+  const sc = FS * (0.4 + ap * 0.6) * P.rise * (1 - rc * 0.07);
+  g.save(); g.globalAlpha = ap; g.translate(ox, oy); g.rotate(B.h + Math.PI / 2); g.scale(sc, sc); g.lineWidth = 1.2 / sc; g.lineJoin = 'round';
+  // two rings of runes turning opposite ways
+  for (const [R, sp, n] of [[100, 0.35, 28], [108, -0.22, 40]]) {
+    g.fillStyle = C.edge2; g.globalAlpha = ap * 0.55;
+    for (let i = 0; i < n; i++) { if ((i + Math.floor(T * 4)) % 5 === 0) continue; const a = i / n * 6.2832 + T * sp; g.fillRect(Math.cos(a) * R - 0.7, Math.sin(a) * R - 0.7, i % 3 ? 1.4 : 2.6, 1.4); }
+  }
+  g.globalAlpha = ap;
+  // the TAIL: five ribbons of light trailing behind, waving (more when its wings are folded)
+  for (let k = 0; k < 5; k++) {
+    const off = k - 2, L = 46 + (2 - Math.abs(off)) * 16, L2 = [], R2 = [];
+    for (let j = 0; j <= 10; j++) {
+      const u = j / 10, x = off * (3 + u * 12) + Math.sin(T * 4.5 + k * 1.3 + u * 5) * u * 9 * (1.6 - P.spread * 0.6), y = 24 + u * L, wd = (1 - u) * 3.2 + 0.3;
+      L2.push([x - wd, y]); R2.push([x + wd, y]);
+    }
+    g.fillStyle = k % 2 ? C.dark2 : C.dark; g.beginPath(); [...L2, ...R2.reverse()].forEach(([x, y], i) => i ? g.lineTo(x, y) : g.moveTo(x, y)); g.closePath(); g.fill();
+    g.strokeStyle = k % 2 ? C.edge2 : C.edge; g.stroke();
+    const [ex, ey] = L2[L2.length - 1]; g.fillStyle = Math.floor(T * 10 + k) % 3 ? C.edge : '#fff'; g.fillRect(ex - 0.5, ey - 1, 2, 2);   // a spark at the end
+  }
+  // the WINGS
+  const tips = [];
+  for (const sd of [-1, 1]) {
+    // the row of shorter feathers along the arm (pointing back)
+    for (let j = 0; j < 6; j++) {
+      const v = (j + 1) / 7, bx = lerp(Wg.s[0], Wg.w[0], v), by = lerp(Wg.s[1], Wg.w[1], v);
+      featherAt(sd, bx, by, 1.25 - v * 0.55 + P.sweep * 0.3, 24 + v * 8, 5, j % 2 ? C.dark2 : C.dark, j % 2 ? C.edge2 : C.edge);
+    }
+    // the 8 long flight feathers, fanning out from the wrist (back ones first)
+    for (let i = 7; i >= 0; i--) {
+      const f = Wg.prim[i];
+      featherAt(sd, f.bx, f.by, f.a, f.L, f.wd, i % 2 ? C.dark2 : C.dark, i % 2 ? C.edge2 : C.edge);
+      g.strokeStyle = 'rgba(255,255,255,0.3)'; g.beginPath(); g.moveTo(sd * f.bx, f.by); g.lineTo(sd * (f.bx + Math.cos(f.a) * f.L * 0.85), f.by + Math.sin(f.a) * f.L * 0.85); g.stroke();   // its shaft
+      g.fillStyle = charging || Math.floor(T * 8 + i) % 6 === 0 ? '#fff' : C.edge; g.fillRect(sd * f.tx - 1, f.ty - 1, 2, 2);                 // a bright tip
+      tips.push([sd * f.tx, f.ty]);
+    }
+    // the arm bone + a spur at the wrist
+    g.strokeStyle = C.edge; g.lineWidth = 2.4 / sc; g.beginPath(); g.moveTo(sd * Wg.s[0], Wg.s[1]); g.lineTo(sd * Wg.w[0], Wg.w[1]); g.stroke(); g.lineWidth = 1.2 / sc;
+    g.fillStyle = '#fff'; g.beginPath(); g.moveTo(sd * (Wg.w[0] - 2), Wg.w[1] + 2); g.lineTo(sd * (Wg.w[0] + Math.cos(Wg.armA - 0.9) * 8), Wg.w[1] + Math.sin(Wg.armA - 0.9) * 8); g.lineTo(sd * (Wg.w[0] + 2), Wg.w[1] - 2); g.closePath(); g.fill();
+  }
+  const fq = Math.floor(T * 14), bolts = [];
+  for (let i = 0; i < tips.length - 1; i++) { if (i === 7) continue; if (hash2(i, fq, 2001) < (charging ? 0.95 : 0.3)) bolts.push([boltPts(tips[i][0], tips[i][1], tips[i + 1][0], tips[i + 1][1], i * 5 + fq, 4, 3), 3000 + i, true]); }
+  if (bolts.length) drawBolts(bolts, 0, 0, C.bolts, 0.9);
+  // the BODY: a crystal teardrop with chevron plates down its back and a core
+  g.fillStyle = C.dark; g.beginPath(); g.moveTo(0, -28); g.bezierCurveTo(22, -24, 19, 12, 0, 32); g.bezierCurveTo(-19, 12, -22, -24, 0, -28); g.fill(); g.strokeStyle = C.edge; g.stroke();
+  for (let k = 0; k < 4; k++) { const y = -2 + k * 8, w = 11 - k * 2, on = (Math.floor(T * 6) - k) % 4 === 0; g.strokeStyle = on ? '#fff' : C.edge2; g.beginPath(); g.moveTo(-w, y + 4); g.lineTo(0, y); g.lineTo(w, y + 4); g.stroke(); }
+  g.fillStyle = Math.floor(T * 9) % 2 ? '#fff' : C.edge; g.beginPath(); g.moveTo(0, -16); g.lineTo(4, -10); g.lineTo(0, -4); g.lineTo(-4, -10); g.closePath(); g.fill();   // the core
+  // the HEAD (pushed forward / pulled back by the pose)
+  const hy = -34 - P.neck, exposed = B.goop <= 0;
+  for (const sd of [-1, 1]) for (let k = 0; k < 3; k++)      // a crest of lightning HORNS, swept back (longer when it's enraged)
+    drawBolts([[boltPts(sd * 5, hy - 2, sd * (10 + k * 5 + (rage ? 3 : 0)), hy + 14 + k * 7 + Math.sin(T * 7 + k + sd) * 2, 40 + k * 3 + (sd > 0 ? 7 : 0) + fq, 4, 2), 3100 + k + (sd > 0 ? 3 : 0), true]], 0, 0, C.bolts, 0.95);
+  g.fillStyle = C.dark; g.beginPath(); [[0, hy - 13], [8, hy - 6], [10, hy + 4], [5, hy + 10], [-5, hy + 10], [-10, hy + 4], [-8, hy - 6]].forEach(([x, y], i) => i ? g.lineTo(x, y) : g.moveTo(x, y)); g.closePath(); g.fill();
+  g.strokeStyle = exposed && Math.floor(T * 6) % 2 ? '#fff' : C.edge; g.stroke();
+  // the BEAK: two halves that split open when it shrieks / bites
+  const op = P.beak * 5;
+  if (P.beak > 0.15) { g.fillStyle = '#fff'; g.globalAlpha = ap * Math.min(1, P.beak); g.beginPath(); g.moveTo(-2, hy - 10); g.lineTo(0, hy - 22); g.lineTo(2, hy - 10); g.fill(); g.globalAlpha = ap; }   // light inside its mouth
+  for (const sd of [-1, 1]) { g.fillStyle = C.beak; g.beginPath(); g.moveTo(0, hy - 10); g.lineTo(sd * 4.5, hy - 9); g.lineTo(sd * (0.5 + op), hy - 26 + op * 0.4); g.closePath(); g.fill(); }
+  // ANGRY EYES: slanted slits pointing down toward the beak, under a heavy V-brow
+  const glare = angry || charging ? 1 : 0.7;
+  for (const sd of [-1, 1]) {
+    g.fillStyle = '#000'; g.beginPath(); g.moveTo(sd * 1.5, hy - 8); g.lineTo(sd * 9.6, hy - 2.8); g.lineTo(sd * 8.6, hy + 0.8); g.lineTo(sd * 1.6, hy - 3.6); g.closePath(); g.fill();   // a dark socket
+    g.fillStyle = C.eye; g.globalAlpha = ap * glare; g.beginPath(); g.moveTo(sd * 2, hy - 6.6); g.lineTo(sd * 9, hy - 2); g.lineTo(sd * 8.2, hy - 0.2); g.lineTo(sd * 2.2, hy - 4.4); g.closePath(); g.fill(); g.globalAlpha = ap;
+    g.fillStyle = C.edge2; g.fillRect(sd > 0 ? 5 : -6, hy - 4.2, 1, 1.4);   // a slit pupil
+    g.strokeStyle = C.edge; g.lineWidth = 2.6 / sc; g.beginPath(); g.moveTo(sd * 0.8, hy - 10.4); g.lineTo(sd * 10.4, hy - 4.6); g.stroke(); g.lineWidth = 1.2 / sc;   // the heavy V-brow
+  }
+  // the GOOP: one dark slimy layer, SEE-THROUGH (you can see Fenix under it)
+  if (B.goop > 0) {
+    const gk = B.goop / FENIX.goop, fl = Wg.fl;
+    const blobs = [[0, 0, 20], [0, hy, 12], [-30, -2, 14], [30, -2, 14], [-58, 2, 12], [58, 2, 12], [0, 20, 11], [-44, 12, 9], [44, 12, 9]].map(([gx, gy, gr], i) =>
+      [gx * (0.7 + 0.3 * P.spread) + (Math.abs(gx) > 20 ? fl * 3 * Math.sign(gx) : 0), gy + Math.sin(T * 2 + i) * 1.5, gr * (0.5 + gk * 0.5) * (1 + 0.07 * Math.sin(T * 3 + i * 1.7))]);
+    g.globalAlpha = ap * 0.45;
+    g.fillStyle = B.flash > 0 ? '#5a1a8a' : '#2a0840'; g.beginPath();
+    for (const [px, py, r] of blobs) { g.moveTo(px + r, py); g.arc(px, py, r, 0, 6.2832); }
+    g.fill();
+    g.globalAlpha = ap * 0.8;
+    for (const [px, py, r] of blobs) for (let a2 = 0; a2 < 6.283; a2 += 0.3) {
+      const ex = px + Math.cos(a2) * r, ey = py + Math.sin(a2) * r;
+      if (blobs.some(([qx, qy, qr]) => (qx !== px || qy !== py) && Math.hypot(ex - qx, ey - qy) < qr - 0.5)) continue;
+      g.fillStyle = hash2(Math.round(a2 * 10), Math.floor(T * 6), Math.round(px)) < 0.3 ? '#f0a0ff' : '#a020ff'; g.fillRect(ex - 0.6, ey - 0.6, 1.2, 1.2);
+    }
+    for (let k = 0; k < 8; k++) { const [px, py, r] = blobs[k % blobs.length], u = (T * 0.8 + k * 0.37) % 1; g.fillStyle = '#c060ff'; g.fillRect(px + Math.sin(k * 3) * r * 0.5, py + r * 0.4 - u * r, 1.2, 1.2); }   // bubbles
+  }
+  g.restore();
+  const pulse = 0.6 + 0.4 * Math.sin(T * 6), [cx, cy] = fenixAt(B, 0, -10), [hx, hy2] = fenixAt(B, 0, hy);
+  glowAt(cx - camX, cy - camY, 11 * FS * pulse, 11 * FS * pulse, 0.55 * ap, PDOTS[3]);   // the CORE
+  for (const sd of [-1, 1]) { const [ex, ey] = fenixAt(B, sd * 5, hy - 3.5); glowAt(ex - camX, ey - camY, 4 * FS, 4 * FS, (angry ? 0.8 : 0.45) * ap, C.spr); }   // its eyes burn
+  if (charging) for (const [wx, wy] of WING_TIPS(B)) glowAt(wx - camX, wy - camY, 24 * FS * 0.6, 24 * FS * 0.6, 0.9, C.spr);
+  if (B.goop > 0) glowAt(ox, oy, 70 * FS * 0.7, 70 * FS * 0.7, 0.18 * ap, GLOW_DARK);
+  if (exposed && !dying) {                                  // the HEAD is open: a bright target on it
+    const x = Math.round(hx - camX), y = Math.round(hy2 - camY), r = 16 * FS + Math.sin(T * 8) * 3;
+    glowAt(x, y, 14 * FS, 14 * FS, 0.25 + 0.15 * Math.sin(T * 10), PDOTS[3]);
+    g.fillStyle = '#fff';
+    for (const [sx, sy] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) { g.fillRect(x + sx * r - (sx > 0 ? 5 : 0), y + sy * r, 6, 1); g.fillRect(x + sx * r, y + sy * r - (sy > 0 ? 5 : 0), 1, 6); }
+  }
+  // the WING LIGHTNING when it fires (huge beams from both wing tips)
+  if (B.state === 'wings' && B.fired && B.lock && B.t - B.fireT < 0.35) {
+    const bolts2 = WING_TIPS(B).map(([wx, wy], i) => { const a2 = Math.atan2(B.lock[1] - wy, B.lock[0] - wx); return [boltPts(wx - camX, wy - camY, wx + Math.cos(a2) * 480 - camX, wy + Math.sin(a2) * 480 - camY, 1800 + i + (B.volley || 0) * 3, 12, 9), 2700 + i, true]; });
+    g.save(); g.globalCompositeOperation = 'lighter'; g.lineCap = 'round';
+    for (const [pts] of bolts2) for (const [lw, col, a2] of [[28, C.deep, 0.4], [13, C.edge2, 0.6], [4, '#fff', 0.85]]) { g.globalAlpha = a2; g.strokeStyle = col; g.lineWidth = lw; g.beginPath(); pts.forEach(([px, py], i) => i ? g.lineTo(px, py) : g.moveTo(px, py)); g.stroke(); }
+    g.restore();
+    drawBolts(bolts2, 0, 0, C.bolts, 1);
+  }
+}
+// THE SHIELD: while its enemies live, a ring of light protects it, and a
+// stream of dots flows from each enemy into it (that's where its power comes from)
+function drawFenixShield(B, camX, camY) {
+  const es = aliveSummons(); if (!es.length || B.dead) return;
+  const C = B.phase2 ? FCOL.rage : FCOL.calm, x = B.x - camX, y = B.y - camY, T = S.t, R = 64 * FS, hit = (B.shieldHit || 0) / 0.35;
+  for (const e of es) {
+    const ex = e.x - camX, ey = e.y - camY, d = Math.hypot(x - ex, y - ey), n = Math.floor(d / 8);
+    for (let i = 0; i < n; i++) { const u = (i / n + T * 0.6) % 1; g.globalAlpha = 0.25 + 0.5 * Math.sin(u * Math.PI); g.fillStyle = i % 2 ? '#fff' : C.edge2; g.fillRect(Math.round(lerp(ex, x, u)), Math.round(lerp(ey, y, u)), 2, 2); }
+  }
+  g.globalAlpha = 1;
+  glowAt(x, y, R * 1.1, R * 1.1, 0.12 + hit * 0.4, C.spr);
+  g.fillStyle = hit > 0 ? '#fff' : C.edge;
+  for (let i = 0; i < 72; i++) { const a = i / 72 * 6.2832 + T * 0.3, w = 1 + 0.06 * Math.sin(a * 6 + T * 3); if ((i + Math.floor(T * 8)) % 9 === 0) continue; g.fillRect(Math.round(x + Math.cos(a) * R * w), Math.round(y + Math.sin(a) * R * w), 2, 2); }
+}
+// WARNINGS on the ground, so you can SEE what's coming:
+//  wings: two dotted lines where the lightning will go (blinking faster just before it fires)
+//  bite:  the lane it will lunge down (it turns solid white when it's locked in — MOVE)
+function drawTelegraphs(B, camX, camY) {
+  if (B.dead || B.state === 'hidden') return;
+  const C = B.phase2 ? FCOL.rage : FCOL.calm;
+  if (fenixCharging(B) && B.lock) {
+    const left = B.t < PACE.wings ? PACE.wings - B.t : PACE.cyc - ((B.t - PACE.wings) % PACE.cyc), blink = left < 0.5 ? Math.floor(S.t * 16) % 2 : 1;
+    for (const [wx, wy] of WING_TIPS(B)) {
+      const a = Math.atan2(B.lock[1] - wy, B.lock[0] - wx);
+      g.fillStyle = blink ? '#fff' : C.edge2; g.globalAlpha = 0.35 + 0.5 * (1 - Math.min(1, left / PACE.wings));
+      for (let d = 10; d < 480; d += 7) g.fillRect(Math.round(wx + Math.cos(a) * d - camX), Math.round(wy + Math.sin(a) * d - camY), 2, 2);
+    }
+    g.globalAlpha = 1;
+  }
+  if (B.state === 'bite' && B.t < PACE.biteWind && B.lunge !== undefined) {
+    const sp = diff().speed * (B.phase2 ? 1.15 : 1), L = PACE.lunge * sp * PACE.biteLunge + 30 * FS, wd = 24 * FS, locked = B.t > PACE.biteWind - BITE_LOCK;
+    const [hx, hy] = fenixAt(B, 0, -34), c = Math.cos(B.lunge), s = Math.sin(B.lunge), nx = -s, ny = c;
+    const pts = [[hx + nx * wd, hy + ny * wd], [hx + c * L + nx * wd, hy + s * L + ny * wd], [hx + c * L - nx * wd, hy + s * L - ny * wd], [hx - nx * wd, hy - ny * wd]];
+    g.globalAlpha = locked ? 0.22 : 0.1; g.fillStyle = locked ? '#fff' : C.edge2; g.beginPath(); pts.forEach(([x, y], i) => i ? g.lineTo(x - camX, y - camY) : g.moveTo(x - camX, y - camY)); g.closePath(); g.fill();
+    g.globalAlpha = locked ? 0.9 : 0.5; g.strokeStyle = locked ? '#fff' : C.edge; g.lineWidth = 1; g.setLineDash([4, 4]); g.stroke(); g.setLineDash([]);
+    g.globalAlpha = 1;
+  }
+}
+// the STORM: warning circles on the ground, then a bolt straight down from the sky
+function drawStorm(B, camX, camY) {
+  if (!B.strikes) return;
+  for (const st of B.strikes) {
+    const x = st.x - camX, y = st.y - camY;
+    if (st.t < PACE.storm && st.t > 0) {                           // the warning: a shrinking ring + a cross
+      const u = st.t / PACE.storm, r = 28 + (1 - u) * 26;
+      g.globalAlpha = 0.4 + u * 0.5; g.fillStyle = Math.floor(S.t * (u > 0.7 ? 20 : 8)) % 2 ? '#fff' : B.phase2 ? '#c040ff' : '#5ff0ff';
+      for (let i = 0; i < 32; i++) { const a = i / 32 * 6.2832 + S.t; g.fillRect(Math.round(x + Math.cos(a) * r), Math.round(y + Math.sin(a) * r * 0.6), 1, 1); }
+      g.fillRect(Math.round(x) - 3, Math.round(y), 7, 1); g.fillRect(Math.round(x), Math.round(y) - 2, 1, 5);
+      g.globalAlpha = 1;
+    } else if (st.t >= PACE.storm && st.t < PACE.storm + 0.25) {               // the STRIKE
+      const f = 1 - (st.t - PACE.storm) / 0.25;
+      g.save(); g.globalCompositeOperation = 'lighter'; g.globalAlpha = f;
+      g.fillStyle = B.phase2 ? '#a020ff' : '#2fd0ff'; g.fillRect(Math.round(x) - 6, 0, 12, Math.round(y)); g.fillStyle = '#fff'; g.fillRect(Math.round(x) - 2, 0, 4, Math.round(y));
+      g.restore();
+      drawBolts([[boltPts(x, -10, x, y, Math.floor(st.x), 12, 10), 3200 + Math.floor(st.x) % 50, true]], 0, 0, B.phase2 ? PURPLE_BOLTS : CYAN_BOLTS, f);
+      glowAt(x, y, 40 * f + 10, 24 * f + 6, f, B.phase2 ? GLOW_DARK : GLOW_CYAN);
+    }
+  }
+}
+// your SWORD (in your hand, pointing where you aim), its SLASH and the BEAM
+function drawPlayerWeapons(camX, camY) {
+  if (!S.sword || !player) return;
+  const a = aimAngle(), px = player.x - camX, py = player.y - camY;
+  if (S.slashFx) {
+    const u = S.slashFx.t / 0.18, sa = S.slashFx.a;
+    g.save(); g.globalCompositeOperation = 'lighter';
+    for (let k = 0; k < 24; k++) {                         // the arc of the swing
+      const aa = sa - 1.0 + (k / 23) * 2.0 * Math.min(1, u * 2), r = FENIX.slashR * (0.6 + 0.4 * (k % 3) / 2);
+      g.fillStyle = k % 3 ? '#ff0000' : '#fff'; g.globalAlpha = 1 - u; g.fillRect(Math.round(px + Math.cos(aa) * r), Math.round(py + Math.sin(aa) * r), 2, 2);
+    }
+    g.restore(); g.globalAlpha = 1;
+  }
+  const swing = S.slashFx ? -1 + Math.min(1, S.slashFx.t / 0.09) * 2 : 0;
+  drawSwordAt(px + Math.cos(a) * 9, py + Math.sin(a) * 9, a + swing, 1);
+  if (S.beamFx) {
+    const f = 1 - S.beamFx.t / 0.16, ba = S.beamFx.a, ex = px + Math.cos(ba) * S.beamFx.len, ey = py + Math.sin(ba) * S.beamFx.len;
+    glowAt((px + ex) / 2, (py + ey) / 2, S.beamFx.len * 0.6, 30, 0.5 * f);
+    for (const [w, col] of [[6 * f + 1, '#a00000'], [3, '#ff0000'], [1, '#fff']]) { g.strokeStyle = col; g.lineWidth = w; g.beginPath(); g.moveTo(px, py); g.lineTo(ex, ey); g.stroke(); }
+    glowAt(ex, ey, 14, 14, f);
+  }
+}
+const FLABEL = { wings: 'WING LIGHTNING  -  GET OUT OF THE LINES', bite: 'BITE  -  MOVE OUT OF ITS PATH', feathers: 'FEATHERS  -  THEY CHASE YOU, SLASH THEM', storm: 'LIGHTNING STORM  -  LEAVE THE CIRCLES', summon: 'IT CALLS ENEMIES', orbs: 'DARK ORBS  -  THEY POWER UP ITS ENEMIES', recover: 'IT IS TIRED  -  ATTACK NOW!' };
+// the HUD: Fenix's health + goop, your sword, a crosshair
+function drawBossHUD() {
+  const B = world.boss; if (!B) return;
+  if (B.state !== 'hidden' && !B.dead) {
+    const bw = 260, bx = Math.round(W / 2 - bw / 2);
+    const col = B.phase2 ? '#c040ff' : '#5ff0ff';
+    hudPanel(bx, 8, bw, 34, B.goop <= 0 ? '#fff' : col);
+    text(B.phase2 ? 'FENIX  -  ENRAGED' : 'FENIX', W / 2, 11, 1, col, 0.05, 'center');
+    g.fillStyle = '#16161a'; g.fillRect(bx + 6, 22, bw - 12, 6);
+    g.fillStyle = B.flash > 0 ? '#fff' : col; g.fillRect(bx + 6, 22, Math.round((bw - 12) * B.hp / FENIX.hp), 6);
+    g.fillStyle = '#16161a'; g.fillRect(bx + 6, 31, bw - 12, 4);
+    const left = aliveSummons().length;
+    if (B.goop > 0) { g.fillStyle = '#7a10d0'; g.fillRect(bx + 6, 31, Math.round((bw - 12) * B.goop / FENIX.goop), 4); }
+    if (left) text('KILL ITS ENEMIES FIRST  -  ' + left + ' LEFT', W / 2, 46, 1, Math.floor(S.t * 3) % 2 ? '#fff' : col, 0.06, 'center');
+    else if (B.goop > 0) text('BREAK ITS GOOP', W / 2, 46, 1, '#a020ff', 0.03, 'center');
+    else { g.fillStyle = '#3a0a5a'; g.fillRect(bx + 6, 31, Math.round((bw - 12) * (1 - B.goopT / FENIX.goopRegen)), 4); if (!left) text('HIT THE HEAD!', W / 2, 46, 1, Math.floor(S.t * 4) % 2 ? col : '#fff', 0.1, 'center'); }
+    // what it's doing RIGHT NOW (and what to do about it)
+    const lab = FLABEL[B.state];
+    if (lab && !S.bossCut) text(lab, W / 2, 58, 1, B.state === 'recover' ? '#fff' : '#c8faff', 0.04, 'center');
+  }
+  if (S.sword) {
+    const bw = 200, bx = Math.round(W / 2 - bw / 2), by = H - 30;
+    hudPanel(bx, by, bw, 22, '#ff0000');
+    text('[CLICK] SLASH', bx + 8, by + 4, 1, S.slashCd > 0 ? '#5a5a64' : '#fff', 0);
+    text('[E] BEAM', bx + bw - 8, by + 4, 1, S.beamCd > 0 ? '#5a5a64' : '#fff', 0, 'right');
+    g.fillStyle = '#ff0000'; g.fillRect(bx + 8, by + 15, Math.round(80 * (1 - S.slashCd / FENIX.slashCd)), 2); g.fillRect(bx + bw - 88, by + 15, Math.round(80 * (1 - S.beamCd / FENIX.beamCd)), 2);
+    if (S.mouse && S.mouse.on) { const mx = Math.round(S.mouse.x), my = Math.round(S.mouse.y); g.fillStyle = '#ff0000'; g.fillRect(mx - 5, my, 3, 1); g.fillRect(mx + 3, my, 3, 1); g.fillRect(mx, my - 5, 1, 3); g.fillRect(mx, my + 3, 1, 3); g.fillStyle = '#fff'; g.fillRect(mx, my, 1, 1); }   // crosshair
+  }
+}
+// the cutscene's black bars + caption (over everything)
+function drawBossCut() {
+  const C = S.bossCut; if (!C) return;
+  const T = (C.kind === 'intro' ? BOSS_INTRO.end : BOSS_DEATH.end) + (C.over || 0), e = smoothstep(Math.min(1, C.t / 0.5, Math.max(0, T - C.t) / 0.5 + (capBusy(C) ? 1 : 0)));
+  g.fillStyle = '#000'; g.fillRect(0, 0, W, Math.round(34 * e)); g.fillRect(0, H - Math.round(50 * e), W, Math.round(50 * e));
+  if (C.show === 'FENIX') {
+    const k = Math.min(1, (C.t - BOSS_INTRO.title) / 0.4);
+    glowAt(W / 2, H / 2 + 60, 160, 30, 0.4 * k, GLOW_CYAN);   // (its name)
+    text('FENIX', W / 2, H / 2 + 46, 4, '#5ff0ff', k < 1 ? 0.6 : 0.08, 'center');
+    text('THE STORM BIRD', W / 2, H / 2 + 80, 1, '#c8faff', 0.05, 'center');
+  } else if (C.show) text(C.show.slice(0, C.typed ?? C.show.length), W / 2, H - 34, 1, '#fff', 0.03, 'center');   // (typing itself out)
+  if (C.flashT !== undefined && C.t - C.flashT < 0.8) { g.globalAlpha = 1 - (C.t - C.flashT) / 0.8; g.fillStyle = '#fff'; g.fillRect(0, 0, W, H); g.globalAlpha = 1; }   // the WHITE FLASH of its end
+  if (C.kind === 'intro') text('[ENTER] SKIP', W - 8, 12, 1, '#3c3c42', 0, 'right');
+}
+// ENTER skips the intro (everything it would have done, done at once)
+function skipBossIntro() {
+  const C = S.bossCut; if (!C || C.kind !== 'intro') return;
+  const B = world.boss;
+  S.sword = true; world.anchorGone = true; world.chains = null; B.appear = 1; B.state = 'hover'; B.t = 0; B.next = 2;
+  S.bossCut = null;
 }
 </script>
 <script>
@@ -8076,7 +9008,8 @@ function gatherLights(camX, camY) {
   // THE ANCHOR — the brightest thing in the void, thumping on its heartbeat
   const stab = world.delivered / Math.max(1, world.total);
   const ak = spawnAnchorK();                       // (at the start of a sector it's still forming)
-  addLight(-camX, -camY, (240 + stab * 70 + beat * 25) * Math.max(0.2, ak), (0.8 + world.anchorPulse * 0.6 + beat * 0.2) * ak, 1, 0.1, 0.07);
+  const [adx, ady] = world.boss ? anchorDrag() : [0, 0];   // (in the boss arena the chains drag it away)
+  addLight(adx - camX, ady - camY, (240 + stab * 70 + beat * 25) * Math.max(0.2, ak), (0.8 + world.anchorPulse * 0.6 + beat * 0.2) * ak, 1, 0.1, 0.07);
   // shards lying around
   for (const s of world.shards) if (s.state === 'free') addLight(s.x - camX, s.y - camY, 46, 0.55, ...(s.pure ? [0.45, 0.4, 1] : [1, 0.05, 0.05]));
   if (player && player.backs) for (const b of player.backs.slice(0, 4)) addLight(b.cx - camX, b.cy - camY, 50, 0.4, ...(b.pure ? [0.45, 0.4, 1] : [1, 0.05, 0.05]));   // (the first few behind you)
@@ -8086,6 +9019,7 @@ function gatherLights(camX, camY) {
   for (const n of world.nulls) if (n.burn < 1) addLight(n.x - camX, n.y - camY, n.r * 1.5 * (1 - n.burn), 0.3, 0.5, 0.4, 1);   // (a blue-purple glow)
   for (const m of world.mines || []) addLight(m.x - camX, m.y - camY, 50 + m.near * 30, 0.4 + m.near * 0.4, 0.5, 0.4, 1);
   for (const b of world.bashers || []) addLight(b.x - camX, b.y - camY, b.state === 'bash' ? 110 : 60, b.state === 'bash' ? 0.9 : 0.4, 0.5, 0.4, 1);
+  if (world.boss && !world.boss.dead && world.boss.state !== 'hidden') addLight(world.boss.x - camX, world.boss.y - camY, 200, 0.9 * (world.boss.appear ?? 1), 0.3, 0.85, 1);   // Fenix lights everything cyan
   for (const n of world.nodes || []) addLight(n.x - camX, n.y - camY, n.zap ? 160 : 70, n.zap ? 1 : 0.45, 0.25, 0.85, 1);   // Nodes: cyan
   for (const m of world.maws || []) addLight(m.x - camX, m.y - camY, m.bolt ? 220 : 90, m.bolt ? 1.2 : 0.5, ...(m.state === 'dying' ? [1, 0.05, 0.05] : [0.5, 0.4, 1]));
   for (const f of FX.list) { const u = f.t / f.life, c = FX_COLS[f.kind].light; addLight(f.x - camX, f.y - camY, 150 * f.size, (1 - u) * 1.6, c[0], c[1], c[2]); }   // explosions light everything up
@@ -8439,18 +9373,54 @@ function drawTitle() {
   const sweep = (S.t * 0.45) % 1.6;                             // a bright line scanning down the logo
   if (sweep < 1) { g.fillStyle = '#fff'; g.fillRect(Math.round(W / 2 - lw / 2), y + Math.round(sweep * 56), lw, 1); }
   g.fillStyle = '#ff0000';                                      // lines either side of the subtitle
-  const sw = textWidth('STABILIZE REALITY', 1);
+  const sub = 'CORRUPT THE UNIVERSE', sw = textWidth(sub, 1);
   g.fillRect(Math.round(W / 2 - sw / 2 - 46), y + 69, 38, 1); g.fillRect(Math.round(W / 2 + sw / 2 + 8), y + 69, 38, 1);
-  text('STABILIZE REALITY', W / 2, y + 66, 1, '#ff0000', 0.15, 'center');
+  text(sub, W / 2, y + 66, 1, '#ff0000', 0.15, 'center');
+  drawTitlePurification();
   // browsers block sound until you click or press something, so the
   // first press just "wakes up" the audio and starts the menu music
   if (Math.floor(S.t * 2) % 2)
     text(!AU.ctx ? 'CLICK TO ENTER THE VOID' : S.resume ? 'PRESS ENTER TO CONTINUE AREA ' + S.resume.area : 'PRESS ENTER TO START', W / 2, H - 70, 2, '#fff', 0.2, 'center');
   if (S.updated) text('NEW VERSION LOADED', W / 2, H - 88, 1, '#ff0000', 0.1, 'center');
-  text('WASD MOVE   SHIFT DASH   E USE   Q DROP   SPACE SHIELD   M MUTE   F FULLSCREEN   ESC PAUSE', W / 2, H - 36, 1, '#8c8c96', 0.03, 'center');
-  if (S.best) text('BEST: AREA ' + S.best + ' CLEARED', W / 2, H - 22, 1, '#8c8c96', 0.03, 'center');
+  { const fade = g.createLinearGradient(0, H - 60, 0, H); fade.addColorStop(0, 'rgba(0,0,0,0)'); fade.addColorStop(0.4, 'rgba(0,0,0,0.75)'); fade.addColorStop(1, 'rgba(0,0,0,0.9)'); g.fillStyle = fade; g.fillRect(0, H - 60, W, 60); }   // a dark band so the text reads
+  text('WASD MOVE   SHIFT DASH   E USE / BEAM   CLICK SLASH   Q DROP   SPACE SHIELD', W / 2, H - 44, 1, '#8c8c96', 0.03, 'center');
+  text('ESC PAUSE   M MUTE   F FULLSCREEN   O SETTINGS', W / 2, H - 33, 1, '#5a5a64', 0.03, 'center');
+  // your progress, reality by reality (only the ones you've reached)
+  const parts = [];
+  REALITIES.forEach((R, i) => { const real = R.sectors ? R.sectors.filter(s => s.open) : []; if (!real.length || (i > 0 && !TEST_VERSION && !beatenList().includes(REALITIES[i - 1].sectors.filter(s => s.open).pop().name))) return; const done = real.filter(s => beatenList().includes(s.name)).length; parts.push(R.name + '  ' + done + '/' + real.length); });
+  text(parts.join('      '), W / 2, H - 21, 1, '#5a5a64', 0.03, 'center');
   // credit where it's due: the kill sound + scream come from DOORS
   text('RANSOM SOUND FROM DOORS - ALL CREDIT TO LSPLASH', W / 2, H - 10, 1, '#5e5e66', 0, 'center');
+}
+
+// the main menu's background: the blue-violet PURIFICATION creeping in from
+// the screen's edges, crackling with lightning — and The Anchor's red holding
+// it back in the middle (what the whole game is about)
+function drawTitlePurification() {
+  const T = S.t, br = 0.5 + 0.15 * Math.sin(T * 0.8);
+  for (const [x, y] of [[0, 0], [W, 0], [0, H], [W, H]]) glowAt(x, y, 150 + Math.sin(T + x) * 15, 110, 0.45 * br, GLOW_BLUE);
+  // lumpy edges of Purification at the four sides
+  g.fillStyle = '#100c30';
+  for (let i = 0; i <= 40; i++) {
+    const u = i / 40, wob = (k) => 6 + 5 * Math.sin(u * 13 + T * 0.6 + k) + 3 * Math.sin(u * 29 - T * 0.9 + k);
+    g.fillRect(Math.round(u * W) - 8, 0, 17, Math.round(wob(0))); g.fillRect(Math.round(u * W) - 8, H - Math.round(wob(2)), 17, Math.round(wob(2)));
+    g.fillRect(0, Math.round(u * H) - 5, Math.round(wob(4)), 11); g.fillRect(W - Math.round(wob(6)), Math.round(u * H) - 5, Math.round(wob(6)), 11);
+  }
+  // violet specks drifting in from the edges
+  for (let k = 0; k < 40; k++) {
+    const side = k % 4, u = hash2(k, 1, 1901), p = (T * (0.04 + hash2(k, 2, 1901) * 0.05) + hash2(k, 3, 1901)) % 1;
+    const x = side === 0 ? u * W : side === 1 ? u * W : side === 2 ? p * 60 : W - p * 60, y = side === 0 ? p * 50 : side === 1 ? H - p * 50 : u * H;
+    g.globalAlpha = 1 - p; g.fillStyle = k % 3 ? '#8a6cff' : '#fff'; g.fillRect(Math.round(x), Math.round(y), 1, 1);
+  }
+  g.globalAlpha = 1;
+  // now and then a crack of blue lightning along an edge
+  const fq = Math.floor(T * 6);
+  if (hash2(fq, 5, 1902) < 0.35) {
+    const e = Math.floor(hash2(fq, 6, 1902) * 4), u0 = hash2(fq, 7, 1902) * 0.8, u1 = u0 + 0.12;
+    const P = (u) => e === 0 ? [u * W, 6] : e === 1 ? [u * W, H - 6] : e === 2 ? [6, u * H] : [W - 6, u * H];
+    const [x0, y0] = P(u0), [x1, y1] = P(u1);
+    drawBolts([[boltPts(x0, y0, x1, y1, fq, 7, 6), 2900 + e, true]], 0, 0, TETHER_BOLTS, 0.9);
+  }
 }
 
 function drawClear() {
@@ -8463,7 +9433,7 @@ function drawClear() {
   const a = clamp((T - C.text) * 1.5, 0, 1);    // the words appear after the seal is whole
   if (a <= 0) return;
   g.globalAlpha = a;
-  text(world.opt.podiums ? 'SECTOR CORRUPTED' : areaName() + ' STABILIZED', W / 2, Math.max(4, bar / 2 - 10), 3, world.opt.podiums ? '#ff0000' : '#fff', Math.max(0.05, 0.5 - (T - C.text) * 0.4), 'center');
+  text(world.boss ? 'FENIX DEFEATED' : world.opt.podiums ? 'SECTOR CORRUPTED' : areaName() + ' STABILIZED', W / 2, Math.max(4, bar / 2 - 10), 3, world.opt.podiums ? '#ff0000' : '#fff', Math.max(0.05, 0.5 - (T - C.text) * 0.4), 'center');
   if (world.opt.podiums) text(areaName(), W / 2, bar + 6, 1, '#8c8c96', 0.05, 'center');
   const t = Math.ceil(Math.max(0, S.time)), m = Math.floor(t / 60), s = String(t % 60).padStart(2, '0');
   if (CFG.timer) text('TIME LEFT  ' + m + ':' + s, W / 2, bar + 6, 1, '#ff0000', 0.05, 'center');
@@ -8893,7 +9863,7 @@ const REALITIES = [
       dangerBlobs: { count: [2, 5], r: [55, 95] },            // 2-5 of them                 // dark purple pools: they hurt YOU, and turn enemies DARK (danger.js)
       beamers: { single: 3, dual: 1, triple: 0 },
       enemies: { mines: [10, 16], bashers: 3, maws: 0, minesInDanger: true } },
-    { name: 'LIGHTNING ROUND', open: true, shards: 10, icon: 'lightning', theme: 'cyan', mapScale: 1.1, music: 'lightning', holdCap: 10,   // 10 podiums, everything CYAN, its own intense music, carry up to 10 shards
+    { name: 'LIGHTNING ROUND', open: true, shards: 10, icon: 'lightning', theme: 'cyan', mapScale: 1.1, music: 'lightning', tip: 'YOU CAN CARRY 2 SHARDS AT ONCE  -  BEAT THE CLOCK',   // 10 podiums, everything CYAN, its own intense music
       rifts: false, tears: false, locators: false, portal: false, farRifts: false, farLightning: false,
       podiums: true, front: true,
       pureMul: 1.8,                                          // the Purification creeps in MUCH faster...
@@ -8902,10 +9872,14 @@ const REALITIES = [
       allPodiumsSeen: true,                                  // arrows point to EVERY podium from the start
       blobs: { count: 5, r: [80, 120], parts: [1, 2] },
       beamers: { single: 2, dual: 1, triple: 0 },
-      enemies: { mines: [8, 12], bashers: 2, maws: 3, nodes: 6 } },   // Thundermaws + the new NODES (nodes.js)
-    { name: '???', open: false },
+      enemies: { mines: [8, 12], bashers: 2, maws: 7, nodes: 12 } },  // LOTS of Thundermaws + the new NODES (nodes.js)
+    { name: 'FENIX', open: true, shards: 6, icon: 'fenix', mapScale: 0.62, music: 'stormbird', boss: 'fenix',   // THE FIRST BOSS (fenix.js): a round arena, no podiums
+      rifts: false, tears: false, locators: false, portal: false, farRifts: false, farLightning: false,
+      podiums: true, front: false, blobs: { count: 0, r: [1, 1], parts: [1, 1] } },
   ] },
-  { name: '???', open: false },
+  { name: '???', open: true, sectors: [                     // REALITY 2: opens when you beat FENIX (its sectors aren't made yet)
+    { name: '???', open: false }, { name: '???', open: false }, { name: '???', open: false }, { name: '???', open: false }, { name: '???', open: false },
+  ] },
   { name: '???', open: false },
   { name: '???', open: false },
 ];
@@ -8915,11 +9889,19 @@ const REALITIES = [
 // In the TEST VERSION (your own copy, BUILD_ID 'dev') every sector that
 // exists is unlocked, so you can test any level straight away.
 const TEST_VERSION = BUILD_ID === 'dev';
+// bump PROGRESS_VERSION to wipe everyone's progress ONCE (the next time they open the game)
+const PROGRESS_VERSION = '2';
+try { if (localStorage.getItem('v0id3d_progress') !== PROGRESS_VERSION) { localStorage.removeItem('v0id3d_beaten'); localStorage.removeItem('v0id3d_best'); localStorage.setItem('v0id3d_progress', PROGRESS_VERSION); } } catch (e) {}
 function beatenList() { try { return JSON.parse(localStorage.getItem('v0id3d_beaten') || '[]'); } catch { return []; } }
 function markBeaten(name) { try { const b = beatenList(); if (!b.includes(name)) { b.push(name); localStorage.setItem('v0id3d_beaten', JSON.stringify(b)); } } catch {} }
 function cardOpen(it, i) {
   if (!it.open) return false;                              // (doesn't exist yet)
-  if (S.mode === 'realities' || S.mode === 'difficulty' || TEST_VERSION || i === 0) return true;
+  if (S.mode === 'realities') {                            // a reality opens when you've beaten the LAST sector (the boss) of the one before
+    if (TEST_VERSION || i === 0) return true;
+    const prev = REALITIES[i - 1], last = prev.sectors.filter(s => s.open).pop();
+    return !!last && beatenList().includes(last.name);
+  }
+  if (S.mode === 'difficulty' || TEST_VERSION || i === 0) return true;
   const prev = S.reality.sectors[i - 1];
   return !!prev && beatenList().includes(prev.name);
 }
@@ -9028,7 +10010,48 @@ function menuHover() {
   const c = menuCards().find(c => S.mouse.x >= c.x && S.mouse.x < c.x + c.w && S.mouse.y >= c.y && S.mouse.y < c.y + c.h);
   return c ? c.i : -1;
 }
+// THE UNLOCK (after beating a reality's boss): the next reality's card is
+// still locked... it shakes, red cracks spread over it, the padlock jitters —
+// then it BURSTS: a flash, the padlock flies apart, and the card is open.
+const UNLOCK = { burst: 1.6, end: 3.6 };
+function updateUnlock(dt) {
+  const U = S.unlockAnim; if (!U) return;
+  const before = U.t; U.t += dt;
+  if (before === 0) SFX.crackle(0.5, 0);
+  if (U.t < UNLOCK.burst && Math.floor(U.t * 8) !== Math.floor(before * 8)) SFX.crackle(0.3 + U.t / UNLOCK.burst * 0.6, 0);
+  if (before < UNLOCK.burst && U.t >= UNLOCK.burst) {
+    SFX.boom(2, 0); SFX.corrupted(); S.shake = 6;
+    const c = menuCards()[U.i];
+    U.bits = []; for (let k = 0; k < 40; k++) { const a = rnd() * 6.283, v = rr(40, 160); U.bits.push({ x: c.x + c.w / 2, y: c.y + 52, vx: Math.cos(a) * v, vy: Math.sin(a) * v - 40, col: k % 3 ? '#ff0000' : '#fff' }); }
+  }
+  for (const b of U.bits || []) { b.x += b.vx * dt; b.y += b.vy * dt; b.vy += 160 * dt; }
+  if (U.t >= UNLOCK.end) S.unlockAnim = null;
+}
+function drawUnlock(c, x, y) {
+  const U = S.unlockAnim, t = U.t, k = Math.min(1, t / UNLOCK.burst);
+  if (t < UNLOCK.burst) {
+    // red cracks spreading from the padlock, brighter and brighter
+    g.strokeStyle = '#ff0000'; g.lineWidth = 1; g.globalAlpha = 0.4 + k * 0.6;
+    for (let i = 0; i < 7; i++) {
+      const a = i / 7 * 6.283 + 0.4, L = k * (30 + hash2(i, 3, 2101) * 30);
+      g.beginPath(); g.moveTo(x + c.w / 2, y + 52);
+      for (let j = 1; j <= 4; j++) g.lineTo(x + c.w / 2 + Math.cos(a + (hash2(i, j, 2102) - 0.5) * 0.6) * L * j / 4, y + 52 + Math.sin(a + (hash2(i, j, 2103) - 0.5) * 0.6) * L * j / 4);
+      g.stroke();
+    }
+    g.globalAlpha = 1;
+    glowAt(x + c.w / 2, y + 52, 20 + k * 40, 20 + k * 40, 0.3 + k * 0.6);
+  } else {
+    const u = (t - UNLOCK.burst) / (UNLOCK.end - UNLOCK.burst);
+    if (u < 0.15) { g.fillStyle = '#fff'; g.globalAlpha = 1 - u / 0.15; g.fillRect(x, y, c.w, c.h); g.globalAlpha = 1; }   // the flash
+    glowAt(x + c.w / 2, y + c.h / 2, c.w * (0.8 + u * 0.4), c.h * 0.8, (1 - u) * 0.8);
+    for (const b of U.bits || []) { g.fillStyle = b.col; g.fillRect(Math.round(b.x), Math.round(b.y), 2, 2); }   // the padlock flying apart
+    g.globalAlpha = Math.min(1, u * 3) * (1 - Math.max(0, u - 0.8) * 5);
+    text('NEW REALITY UNLOCKED', W / 2, y - 22, 2, '#ff0000', 0.15, 'center');
+    g.globalAlpha = 1;
+  }
+}
 function menuPick(i) {
+  if (S.unlockAnim) return;                                // (wait for the unlock to finish)
   const it = menuList()[i]; if (!it) return;
   if (!cardOpen(it, i)) { SFX.denied(); S.menuShake = { i, t: 0.35 }; return; }       // locked: a "nope" and a shake
   SFX.menuPick();
@@ -9040,6 +10063,7 @@ function menuPick(i) {
 }
 function menuKey(key) {
   const n = menuList().length;
+  if (S.unlockAnim) return;
   const first = menuList().findIndex((c, i) => cardOpen(c, i));
   if (key === 'arrowleft' || key === 'a') { S.menuSel = S.menuSel < 0 ? first : (S.menuSel - 1 + n) % n; SFX.menuMove(); }
   if (key === 'arrowright' || key === 'd') { S.menuSel = S.menuSel < 0 ? first : (S.menuSel + 1) % n; SFX.menuMove(); }
@@ -9101,6 +10125,15 @@ function sectorIconLightning(cx, cy, sel) {
   const a = S.t * 3; g.beginPath(); g.moveTo(cx + 14, cy - 10); g.lineTo(cx + 14 + Math.cos(a) * 4, cy - 10 + Math.sin(a) * 4); g.stroke();   // the clock hand
   diamond(cx + 16, cy + 8, 3, sel ? '#ff0000' : '#fff');
 }
+// FENIX's picture: a lightning bird, wings spread
+function sectorIconFenix(cx, cy, sel) {
+  glowAt(cx, cy, 34, 22, 0.5, GLOW_CYAN);
+  const fl = Math.sin(S.t * 5) * 3;
+  for (const sd of [-1, 1]) { g.fillStyle = '#04141c'; g.beginPath(); g.moveTo(cx + sd * 3, cy); g.lineTo(cx + sd * 24, cy - 10 + fl); g.lineTo(cx + sd * 18, cy + 4 + fl * 0.5); g.closePath(); g.fill(); g.strokeStyle = '#2fd0ff'; g.lineWidth = 1; g.stroke(); }
+  g.fillStyle = '#061c26'; g.beginPath(); g.ellipse(cx, cy + 2, 5, 8, 0, 0, 6.2832); g.fill(); g.strokeStyle = '#5ff0ff'; g.stroke();
+  g.fillStyle = sel ? '#ff0000' : '#fff'; g.fillRect(cx + 1, cy - 6, 2, 1);
+  if (hash2(1, Math.floor(S.t * 8), 1801) < 0.4) drawBolts([[boltPts(cx - 20, cy - 6 + fl, cx + 20, cy - 6 + fl, Math.floor(S.t * 8), 6, 4), 2800, true]], 0, 0, CYAN_BOLTS, 0.6);
+}
 // a little pixel PADLOCK (for locked cards)
 function padlock(cx, cy, col) {
   g.fillStyle = col;
@@ -9114,15 +10147,16 @@ function drawMenu() {
   text(reals ? 'CHOOSE A REALITY' : diffs ? 'CHOOSE A DIFFICULTY' : 'CHOOSE A SECTOR', W / 2, 34, 3, '#fff', 0.15, 'center');
   text(reals ? 'WHERE WILL YOU BE SENT?' : 'REALITY: ' + S.reality.name + (diffs ? '' : '   -   ' + diff().name), W / 2, 62, 1, '#ff0000', 0.05, 'center');
   for (const c of menuCards()) {
-    const sel = c.i === S.menuSel, open = cardOpen(c.it, c.i);
+    const unl = S.mode === 'realities' && S.unlockAnim && S.unlockAnim.i === c.i;
+    const sel = c.i === S.menuSel && !unl, open = cardOpen(c.it, c.i) && !(unl && S.unlockAnim.t < UNLOCK.burst);   // (still LOCKED until the unlock bursts)
     const sh = S.menuShake && S.menuShake.i === c.i ? Math.round(Math.sin(S.menuShake.t * 60) * 3 * S.menuShake.t / 0.35) : 0;
-    const x = c.x + sh, y = c.y - (sel && open ? 3 : 0);
+    const ush = unl && S.unlockAnim.t < UNLOCK.burst ? rr(-1, 1) * S.unlockAnim.t * 2.5 : 0;   // (shaking harder and harder)
+    const x = c.x + sh + Math.round(ush), y = c.y - (sel && open ? 3 : 0);
     if (sel && open) glowAt(x + c.w / 2, y + c.h / 2, c.w * 0.8, c.h * 0.7, 0.35);
     g.fillStyle = '#000'; g.fillRect(x, y, c.w, c.h);
     g.fillStyle = open ? (sel ? '#ff0000' : '#3c3c42') : '#262626';   // (red only while it's picked/hovered)
     g.fillRect(x, y, c.w, 1); g.fillRect(x, y + c.h - 1, c.w, 1); g.fillRect(x, y, 1, c.h); g.fillRect(x + c.w - 1, y, 1, c.h);
     if (sel) bracket(x - 3, y - 3, c.w + 6, c.h + 6, 8, open ? '#fff' : '#3c3c42');
-    text((reals ? 'REALITY ' : diffs ? 'DIFFICULTY ' : 'SECTOR ') + (c.i + 1), x + c.w / 2, y + 8, 1, open ? '#8c8c96' : '#3c3c42', 0, 'center');
     if (open) {
       // a little Anchor (reality) / a ring of dots (sector) as the picture
       const cx = x + c.w / 2, cy = y + 52;
@@ -9132,6 +10166,7 @@ function drawMenu() {
       else if (c.it.icon === 'seas') sectorIconSeas(cx, cy, sel);
       else if (c.it.icon === 'danger') sectorIconDanger(cx, cy, sel);
       else if (c.it.icon === 'lightning') sectorIconLightning(cx, cy, sel);
+      else if (c.it.icon === 'fenix') sectorIconFenix(cx, cy, sel);
       else { glowAt(cx, cy, 26, 26, 0.35); g.fillStyle = '#ff0000'; dotSquare(cx, cy, 22, S.t * 0.6, 40, 1, 4, Math.floor(S.t * 6));
              g.fillStyle = '#fff'; dotSquare(cx, cy, 13, -S.t * 0.9, 16, 1); diamond(cx, cy, 4, '#fff'); }
       const nm = c.it.name, sc = textWidth(nm, 2) <= c.w - 10 ? 2 : 1;
@@ -9141,6 +10176,7 @@ function drawMenu() {
       text('???', x + c.w / 2, y + c.h - 26, 2, '#3c3c42', 0, 'center');
       text('LOCKED', x + c.w / 2, y + c.h - 10, 1, '#3c3c42', 0, 'center');
     }
+    if (unl) drawUnlock(c, x, y);
   }
   text('A / D  SELECT      ENTER  CHOOSE      ESC  BACK', W / 2, H - 22, 1, '#8c8c96', 0.03, 'center');
   if (TEST_VERSION && S.mode === 'sectors') text('TEST VERSION: ALL SECTORS UNLOCKED', W / 2, 76, 1, '#5a5a64', 0, 'center');
@@ -9253,16 +10289,19 @@ function drawTutAsk() {
 //  The bars on the right are the music itself: an "analyser" measures how
 //  loud each pitch is right now, from deep (left) to high (right).
 // =====================================================================
-function toSoundtrack() { S.mode = 'soundtrack'; S.stSel = 0; JUKE.playing = null; }
-function soundtrackRows() { return SONGS.map((s, i) => ({ s, i, x: 20, y: 58 + i * 21, w: 290, h: 18 })); }
+function toSoundtrack() { S.mode = 'soundtrack'; S.stSel = 0; S.stScroll = 0; JUKE.playing = null; }
+const ST_VISIBLE = 11;                                      // how many songs fit in the list at once (the rest: scroll)
+function stScrollClamp() { S.stScroll = clamp(S.stScroll || 0, 0, Math.max(0, SONGS.length - ST_VISIBLE)); }
+function stKeepVisible() { if (S.stSel < (S.stScroll || 0)) S.stScroll = S.stSel; if (S.stSel >= (S.stScroll || 0) + ST_VISIBLE) S.stScroll = S.stSel - ST_VISIBLE + 1; stScrollClamp(); }
+function soundtrackRows() { stScrollClamp(); const o = S.stScroll || 0; return SONGS.slice(o, o + ST_VISIBLE).map((s, j) => ({ s, i: o + j, x: 20, y: 58 + j * 21, w: 290, h: 18 })); }
 function soundtrackPick(i) {
   const k = SONGS[i].key;
   JUKE.playing = JUKE.playing === k ? null : k;                 // the same one again = stop
 }
 function soundtrackKey(key) {
   const n = SONGS.length;
-  if (key === 'arrowup' || key === 'w') { S.stSel = (S.stSel - 1 + n) % n; SFX.menuMove(); }
-  if (key === 'arrowdown' || key === 's') { S.stSel = (S.stSel + 1) % n; SFX.menuMove(); }
+  if (key === 'arrowup' || key === 'w') { S.stSel = (S.stSel - 1 + n) % n; SFX.menuMove(); stKeepVisible(); }
+  if (key === 'arrowdown' || key === 's') { S.stSel = (S.stSel + 1) % n; SFX.menuMove(); stKeepVisible(); }
   if (key === 'enter' || key === ' ') soundtrackPick(S.stSel);
   if (key === 'escape') { JUKE.playing = null; S.mode = 'settings'; }
 }
@@ -9271,6 +10310,14 @@ function drawSoundtrack() {
   dim(0.75);
   text('SOUNDTRACK', 20, 18, 3, '#fff', 0.12, 'left');
   text(SONGS.length + ' SONGS', 20, 42, 1, '#8c8c96', 0, 'left');
+  // the scrollbar (when there are more songs than fit)
+  if (SONGS.length > ST_VISIBLE) {
+    const top = 56, h = ST_VISIBLE * 21 - 4, bh = Math.round(h * ST_VISIBLE / SONGS.length), by = top + Math.round((h - bh) * (S.stScroll || 0) / (SONGS.length - ST_VISIBLE));
+    g.fillStyle = '#16161a'; g.fillRect(316, top, 2, h); g.fillStyle = '#ff0000'; g.fillRect(316, by, 2, bh);
+    g.fillStyle = '#8c8c96';
+    if (S.stScroll > 0) for (let k = 0; k < 3; k++) g.fillRect(317 - k, top - 6 + k, 1 + k * 2, 1);             // a little up arrow: more above
+    if (S.stScroll < SONGS.length - ST_VISIBLE) for (let k = 0; k < 3; k++) g.fillRect(317 - k, top + h + 5 - k, 1 + k * 2, 1);   // and down: more below
+  }
   for (const r of soundtrackRows()) {
     const sel = r.i === S.stSel, on = JUKE.playing === r.s.key;
     if (sel) { g.fillStyle = '#1a0000'; g.fillRect(r.x - 4, r.y - 3, r.w + 8, r.h); bracket(r.x - 4, r.y - 3, r.w + 8, r.h, 4, '#ff0000'); }
@@ -9440,7 +10487,7 @@ function updateCutscene(dt) {
   cam.x += ((C.out ? player.x : T.x) - cam.x) * ca; cam.y += ((C.out ? player.y : T.y) - cam.y) * ca;
   // the text types itself out (it waits until the camera is nearly there)
   if (!C.out && C.t > 0.35) {
-    const before = Math.floor(C.shown); C.shown = Math.min(sh.txt.length, C.shown + dt * 30);
+    const before = Math.floor(C.shown); C.shown = Math.min(sh.txt.length, C.shown + dt * 16);   // (16 letters a second)
     for (let i = before; i < Math.floor(C.shown); i++) if (sh.txt[i] !== ' ' && i % 2 === 0) SFX.typeBeep(sh.txt[i]);
   }
 }
@@ -9539,8 +10586,13 @@ function render() {
   drawLighting(camX, camY);                        // the lights reveal the dust and fog in the void
   drawNullification(camX, camY);                   // the Purification — UNDER everything else, so you can always see what's in it
   if (world.opt.podiums) drawBarrier(camX, camY);    // the map's REAL border (cyan force field) — over the Purification, so you always see it
-  if (world.danger) drawDanger(camX, camY);          // Dangerblobs + slime (danger.js)
-  if (S.spawn && S.spawn.t < SPAWN.burst) drawAnchorForming(camX, camY); else drawAnchor(camX, camY, k);
+  if (world.danger || world.slime) drawDanger(camX, camY);          // Dangerblobs + slime (danger.js)
+  if (S.spawn && S.spawn.t < SPAWN.burst) drawAnchorForming(camX, camY);
+  else if (!world.anchorGone) {
+    const [ax, ay] = world.boss ? anchorDrag() : [0, 0];
+    if (world.anchorAt && world.anchorForm < 1) { g.save(); g.globalAlpha = world.anchorForm; drawAnchor(camX - ax, camY - ay, k); g.restore(); glowAt(ax - camX, ay - camY, 60 * (1 - world.anchorForm) + 20, 60 * (1 - world.anchorForm) + 20, 1 - world.anchorForm); }   // (forming under you)
+    else drawAnchor(camX - ax, camY - ay, k);
+  }   // (in the boss arena the chains drag it away)
   drawBlobs(camX, camY, k, late);
   drawLocators(camX, camY);
   drawPortal(camX, camY, 'outer');
@@ -9560,13 +10612,14 @@ function render() {
   if (world.mines) { drawMines(camX, camY); drawBashers(camX, camY); drawMaws(camX, camY); drawNodes(camX, camY); }
   if (player && S.mode !== 'dead') {
     for (const s of player.carried) drawShard(s, s.cx - camX, s.cy - camY, ART, k, 0.6);
-    if (S.mode === 'play' || S.mode === 'paused' || S.mode === 'clear' || S.mode === 'cracking' || S.mode === 'warping') { if (!S.spawn || S.spawn.t >= SPAWN.emerge) drawPlayer(camX, camY, k); }
+    if (S.mode === 'play' || S.mode === 'paused' || S.mode === 'clear' || S.mode === 'cracking' || S.mode === 'warping') { if ((!S.spawn || S.spawn.t >= SPAWN.emerge) && !S.hidePlayer) drawPlayer(camX, camY, k); }
     else if (S.mode === 'grabbed') drawGrabbedPlayer(Math.round(player.x - camX), Math.round(player.y - camY), 'under');
     if (S.mode === 'play' || S.mode === 'paused') drawHeld(camX, camY, k);
   }
   drawBeams(camX, camY);                           // (on top of the darkness: you see them coming)
   if (world.maws) drawMawBolts(camX, camY);
   if (world.nodes) drawNodeBolts(camX, camY);
+  if (world.boss) { drawBossWorld(camX, camY, k); drawPlayerWeapons(camX, camY); }   // FENIX, its feathers + orbs, your sword (fenix.js)
   drawSpikes(camX, camY);
   drawSuck(camX, camY);                            // remains being sucked into The Anchor
   drawFX(camX, camY);                              // EXPLOSIONS
@@ -9607,7 +10660,8 @@ function render() {
   if (S.core > 0.01 && (S.mode === 'play' || S.mode === 'paused' || S.mode === 'warping')) drawPortalTunnel(S.core, player.x - camX, player.y - camY);
   if (S.mode === 'warping') drawWarpStorm(S.warpT);          // MORE LIGHTNING >:)
 
-  if ((S.mode === 'play' || S.mode === 'paused' || S.mode === 'grabbed' || S.mode === 'warping') && !S.cutscene && !S.spawn) drawHUD(k, late);
+  if ((S.mode === 'play' || S.mode === 'paused' || S.mode === 'grabbed' || S.mode === 'warping') && !S.cutscene && !S.spawn && !S.bossCut) drawHUD(k, late);
+  if (S.bossCut && S.mode === 'play') drawBossCut();
   if (S.tutorial && (S.mode === 'play' || S.mode === 'paused')) drawTutorial();
   if (S.mode === 'paused') {
     dim(0.6);
@@ -9661,6 +10715,7 @@ addEventListener('keydown', e => {
   else if (S.mode === 'realities' || S.mode === 'difficulty' || S.mode === 'sectors') menuKey(key);
   else if (S.mode === 'play') {
     if (S.spawn && key !== 'escape' && key !== 'p') return;   // (arriving: wait a moment)
+    if (S.bossCut) { if (key === 'enter' || key === 'tab') skipBossIntro(); return; }   // (a boss cutscene)
     if (S.cutscene && key !== 'escape' && key !== 'p') { cutsceneKey(key); if (key === 'tab') endTutorial(); return; }   // (a tutorial cutscene is playing)
     if (key === 'e' && !tryLocator()) { if (world.opt.podiums) interactPurify(); else tryDeliver(); }   // E: a Locator next to you? use it. Otherwise purify / place / deliver.
     if (key === 'shift') tryDash();                // (SPACE is the shield now — held down, see purify.js)
@@ -9695,6 +10750,7 @@ addEventListener('mousedown', () => {
   if (S.trans) return;
   if (S.mode === 'tutask') { const b = tutAskBtns().find(overRect); if (b) tutAskPick(b.i); }
   else if (S.mode === 'softdead') { const b = softDeadBtns().find(overRect); if (b) softDeadPick(b.i); }
+  else if (S.mode === 'play' && world.boss) swordSlash();   // CLICK = slash with the sword (fenix.js)
   else if (S.mode === 'title' && !firstPress) { if (overRect(settingsBtn())) toSettings(); else startFromTitle(); }
   else if (S.mode === 'settings') { const r = settingsRows().find(overRect); if (r) settingsPick(r.i); }
   else if (S.mode === 'soundtrack') { const r = soundtrackRows().find(overRect); if (r) soundtrackPick(r.i); }
@@ -9702,6 +10758,11 @@ addEventListener('mousedown', () => {
   else if (S.mode === 'realities' || S.mode === 'difficulty' || S.mode === 'sectors') { const i = menuHover(); if (i >= 0) menuPick(i); }
 });
 // where the mouse is, in GAME pixels (the canvas is scaled up and centred on the page)
+// the mouse WHEEL scrolls the soundtrack list
+addEventListener('wheel', e => {
+  if (S.mode !== 'soundtrack') return;
+  S.stScroll = (S.stScroll || 0) + (e.deltaY > 0 ? 1 : -1); stScrollClamp();
+}, { passive: true });
 addEventListener('mousemove', e => {
   const r = cv.getBoundingClientRect();
   S.mouse = { x: (e.clientX - r.left) / r.width * W, y: (e.clientY - r.top) / r.height * H, on: true };
